@@ -28,6 +28,8 @@ export function NoteEditor({
   const viewRef = useRef<EditorView | null>(null);
   const lastSavedRef = useRef<string>(value);
   const valueRef = useRef(value);
+  const onChangeRef = useRef(onChange);
+  const onAutoSaveRef = useRef(onAutoSave);
   const isEditable = Boolean(note) && !isReadOnly;
   const placeholderText = note
     ? isReadOnly
@@ -44,12 +46,20 @@ export function NoteEditor({
   const placeholderCompartment = useMemo(() => new Compartment(), []);
 
   useEffect(() => {
+    onChangeRef.current = onChange;
+  }, [onChange]);
+
+  useEffect(() => {
+    onAutoSaveRef.current = onAutoSave;
+  }, [onAutoSave]);
+
+  useEffect(() => {
     const container = containerRef.current;
     if (!container) return;
 
     const updateListener = EditorView.updateListener.of((update) => {
       if (update.docChanged) {
-        onChange(update.state.doc.toString());
+        onChangeRef.current(update.state.doc.toString());
       }
     });
 
@@ -82,7 +92,7 @@ export function NoteEditor({
       view.destroy();
       viewRef.current = null;
     };
-  }, [editableCompartment, onChange, placeholderCompartment]);
+  }, [editableCompartment, placeholderCompartment]);
 
   useEffect(() => {
     valueRef.current = value;
@@ -114,13 +124,13 @@ export function NoteEditor({
   }, [editableCompartment, isEditable, placeholderCompartment, placeholderText, value]);
 
   useEffect(() => {
-    if (!note) return;
+    if (!note || isReadOnly) return;
     if (value === lastSavedRef.current) return;
 
     const handle = window.setTimeout(() => {
       void (async () => {
         try {
-          await onAutoSave(value);
+          await onAutoSaveRef.current(value);
           lastSavedRef.current = value;
         } catch {
           // Save status handled upstream.
@@ -131,7 +141,7 @@ export function NoteEditor({
     return () => {
       window.clearTimeout(handle);
     };
-  }, [note, onAutoSave, value]);
+  }, [isReadOnly, note, value]);
 
   return (
     <section className={`note-editor ${isActive ? "note-editor--active" : ""}`}>

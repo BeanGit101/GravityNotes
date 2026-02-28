@@ -65,6 +65,8 @@ function App() {
     return Math.min(Math.max(parsed, SIDEBAR_MIN_WIDTH), maxWidth);
   });
   const resizeStateRef = useRef<{ startX: number; startWidth: number } | null>(null);
+  const loadingRef = useRef<Set<string>>(new Set());
+  const cryptoRef = useRef((globalThis as { crypto?: Crypto }).crypto);
 
   const noteIndex = useMemo(() => {
     const map = new Map<string, Note>();
@@ -154,35 +156,44 @@ function App() {
 
   const ensureNoteLoaded = useCallback(
     async (note: Note) => {
-      if (Object.prototype.hasOwnProperty.call(noteContents, note.id)) return;
-      if (loadingNoteIds.has(note.id)) return;
+      const noteId = note.id;
+      const notePath = note.path;
+      const noteTitle = note.title;
 
-      setLoadingNoteIds((current) => {
-        const next = new Set(current);
-        next.add(note.id);
-        return next;
-      });
+      if (Object.prototype.hasOwnProperty.call(noteContents, noteId)) return;
+      if (loadingRef.current.has(noteId)) return;
+
+      loadingRef.current.add(noteId);
+
+      setLoadingNoteIds((current) => new Set(current).add(noteId));
 
       try {
-        const content = await readNote(note.path);
-        setNoteContents((current) => ({ ...current, [note.id]: content }));
+        const content = await readNote(notePath);
+        setNoteContents((current) => ({ ...current, [noteId]: content }));
       } catch (error) {
         console.error(error);
-        setErrorMessage("Unable to read the note.");
+        setErrorMessage(`Unable to read "${noteTitle}". The file may be inaccessible.`);
       } finally {
+        loadingRef.current.delete(noteId);
         setLoadingNoteIds((current) => {
           const next = new Set(current);
-          next.delete(note.id);
+          next.delete(noteId);
           return next;
         });
       }
     },
-    [loadingNoteIds, noteContents]
+    [noteContents]
   );
 
   const openNoteInPane = useCallback(
     async (note: Note, mode: "active" | "new") => {
       setErrorMessage(null);
+      const createPaneId = () => {
+        if (cryptoRef.current?.randomUUID) {
+          return cryptoRef.current.randomUUID();
+        }
+        return `${String(Date.now())}-${Math.random().toString(16).slice(2)}`;
+      };
 
       setOpenPanes((current) => {
         const existing = current.find((pane) => pane.noteId === note.id);
@@ -191,27 +202,23 @@ function App() {
           return current;
         }
 
-        if (mode === "new") {
-          if (current.length < 4) {
-            const id = globalThis.crypto.randomUUID();
-            setActivePaneId(id);
-            return [...current, { id, noteId: note.id }];
-          }
+        if (mode === "new" && current.length < 4) {
+          const id = createPaneId();
+          setActivePaneId(id);
+          return [...current, { id, noteId: note.id }];
+        }
 
-          if (activePaneId) {
+        if (current.length > 0) {
+          const targetId = activePaneId ?? current[0]?.id;
+          if (targetId) {
+            setActivePaneId(targetId);
             return current.map((pane) =>
-              pane.id === activePaneId ? { ...pane, noteId: note.id } : pane
+              pane.id === targetId ? { ...pane, noteId: note.id } : pane
             );
           }
         }
 
-        if (activePaneId) {
-          return current.map((pane) =>
-            pane.id === activePaneId ? { ...pane, noteId: note.id } : pane
-          );
-        }
-
-        const id = globalThis.crypto.randomUUID();
+        const id = createPaneId();
         setActivePaneId(id);
         return [...current, { id, noteId: note.id }];
       });
