@@ -21,9 +21,17 @@ const NODE_DECORATORS: Record<string, Decoration> = {
   Image: Decoration.mark({ class: "md-image" }),
 };
 
+const HIDDEN_MARKER_DECORATION = Decoration.replace({});
+
+const MARKER_NODE_NAMES = new Set(["EmphasisMark", "StrongEmphasisMark", "StrikethroughMark"]);
+
 export function buildDecorations(view: EditorView): DecorationSet {
   const builder = new RangeSetBuilder<Decoration>();
+  const ranges: Array<{ from: number; to: number; deco: Decoration }> = [];
   const tree = syntaxTree(view.state);
+  const cursorLine = view.state.doc.lineAt(view.state.selection.main.head);
+  const cursorLineFrom = cursorLine.from;
+  const cursorLineTo = cursorLine.to;
 
   for (const { from, to } of view.visibleRanges) {
     tree.iterate({
@@ -32,11 +40,24 @@ export function buildDecorations(view: EditorView): DecorationSet {
       enter(node) {
         const deco = NODE_DECORATORS[node.name];
         if (deco) {
-          builder.add(node.from, node.to, deco);
+          ranges.push({ from: node.from, to: node.to, deco });
+        }
+
+        if (MARKER_NODE_NAMES.has(node.name)) {
+          const onCursorLine = node.from >= cursorLineFrom && node.from <= cursorLineTo;
+          if (!onCursorLine) {
+            ranges.push({ from: node.from, to: node.to, deco: HIDDEN_MARKER_DECORATION });
+          }
         }
       },
     });
   }
+
+  ranges
+    .sort((a, b) => a.from - b.from || a.to - b.to)
+    .forEach(({ from, to, deco }) => {
+      builder.add(from, to, deco);
+    });
 
   return builder.finish();
 }
