@@ -3,6 +3,7 @@ import { EditorState } from "@codemirror/state";
 import { EditorView, keymap, placeholder } from "@codemirror/view";
 import { defaultKeymap } from "@codemirror/commands";
 import { markdown } from "@codemirror/lang-markdown";
+import { markdownDecoratorPlugin, markdownTheme } from "../codemirror/markdownDecorations";
 
 export interface CodeMirrorEditorProps {
   initialDoc?: string;
@@ -25,6 +26,8 @@ export function CodeMirrorEditor({
       doc: initialDoc,
       extensions: [
         markdown(),
+        markdownDecoratorPlugin,
+        markdownTheme,
         keymap.of(defaultKeymap),
         placeholder(placeholderText),
         EditorView.theme({
@@ -40,7 +43,10 @@ export function CodeMirrorEditor({
       parent: container,
     });
 
+    (window as Window & { gravityEditorView?: EditorView }).gravityEditorView = view;
+
     return () => {
+      delete (window as Window & { gravityEditorView?: EditorView }).gravityEditorView;
       view.destroy();
     };
   }, [initialDoc, placeholderText]);

@@ -3,6 +3,7 @@ import { Compartment, EditorState } from "@codemirror/state";
 import { EditorView, keymap, placeholder } from "@codemirror/view";
 import { defaultKeymap } from "@codemirror/commands";
 import { markdown } from "@codemirror/lang-markdown";
+import { markdownDecoratorPlugin, markdownTheme } from "../codemirror/markdownDecorations";
 import type { Note } from "../types/notes";
 
 interface NoteEditorProps {
@@ -67,6 +68,8 @@ export function NoteEditor({
       doc: initialStateRef.current.value,
       extensions: [
         markdown(),
+        markdownDecoratorPlugin,
+        markdownTheme,
         EditorView.lineWrapping,
         keymap.of(defaultKeymap),
         updateListener,
