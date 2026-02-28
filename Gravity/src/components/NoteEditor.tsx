@@ -1,29 +1,43 @@
-import { useEffect, useMemo, useRef } from "react";
+import { type ReactNode, useEffect, useMemo, useRef } from "react";
 import { Compartment, EditorState } from "@codemirror/state";
 import { EditorView, keymap, placeholder } from "@codemirror/view";
 import { defaultKeymap } from "@codemirror/commands";
 import { markdown } from "@codemirror/lang-markdown";
 import type { Note } from "../types/notes";
 
-type SaveStatus = "idle" | "saving" | "saved" | "error";
-
 interface NoteEditorProps {
   note: Note | null;
   value: string;
-  saveStatus: SaveStatus;
   onChange: (value: string) => void;
   onAutoSave: (value: string) => Promise<void>;
+  toolbarActions?: ReactNode;
+  isActive?: boolean;
+  isReadOnly?: boolean;
 }
 
-export function NoteEditor({ note, value, saveStatus, onChange, onAutoSave }: NoteEditorProps) {
+export function NoteEditor({
+  note,
+  value,
+  onChange,
+  onAutoSave,
+  toolbarActions,
+  isActive = false,
+  isReadOnly = false,
+}: NoteEditorProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   const viewRef = useRef<EditorView | null>(null);
   const lastSavedRef = useRef<string>(value);
   const valueRef = useRef(value);
+  const isEditable = Boolean(note) && !isReadOnly;
+  const placeholderText = note
+    ? isReadOnly
+      ? "Loading note..."
+      : "Start writing your note..."
+    : "Select or create a note to begin.";
   const initialStateRef = useRef({
     value,
-    isEditable: Boolean(note),
-    placeholder: note ? "Start writing your note..." : "Select or create a note to begin.",
+    isEditable,
+    placeholder: placeholderText,
   });
 
   const editableCompartment = useMemo(() => new Compartment(), []);
@@ -84,15 +98,10 @@ export function NoteEditor({ note, value, saveStatus, onChange, onAutoSave }: No
     const view = viewRef.current;
     if (!view) return;
 
-    const isEditable = Boolean(note);
     view.dispatch({
       effects: [
         editableCompartment.reconfigure(EditorView.editable.of(isEditable)),
-        placeholderCompartment.reconfigure(
-          placeholder(
-            isEditable ? "Start writing your note..." : "Select or create a note to begin."
-          )
-        ),
+        placeholderCompartment.reconfigure(placeholder(placeholderText)),
       ],
     });
 
@@ -102,7 +111,7 @@ export function NoteEditor({ note, value, saveStatus, onChange, onAutoSave }: No
         changes: { from: 0, to: currentValue.length, insert: value },
       });
     }
-  }, [editableCompartment, note, placeholderCompartment, value]);
+  }, [editableCompartment, isEditable, placeholderCompartment, placeholderText, value]);
 
   useEffect(() => {
     if (!note) return;
@@ -124,29 +133,14 @@ export function NoteEditor({ note, value, saveStatus, onChange, onAutoSave }: No
     };
   }, [note, onAutoSave, value]);
 
-  const statusLabel = (() => {
-    switch (saveStatus) {
-      case "saving":
-        return "Saving...";
-      case "saved":
-        return "Saved";
-      case "error":
-        return "Save failed";
-      default:
-        return "Idle";
-    }
-  })();
-
   return (
-    <section className="note-editor">
+    <section className={`note-editor ${isActive ? "note-editor--active" : ""}`}>
       <div className="note-editor__toolbar">
         <div>
           <p className="note-editor__eyebrow">Editor</p>
           <h3 className="note-editor__title">{note ? note.title : "No note selected"}</h3>
         </div>
-        <span className={`note-editor__status note-editor__status--${saveStatus}`}>
-          {statusLabel}
-        </span>
+        {toolbarActions && <div className="note-editor__actions">{toolbarActions}</div>}
       </div>
       <div className="note-editor__surface" ref={containerRef} />
     </section>
