@@ -407,6 +407,10 @@ body {
   height: 100%;
 }
 
+.cm-lintRange-error {
+  text-decoration: underline wavy red;
+}
+
 .pane-container {
   display: grid;
   gap: 1.5rem;
