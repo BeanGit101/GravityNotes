@@ -3,8 +3,20 @@ import { Compartment, EditorState } from "@codemirror/state";
 import { EditorView, keymap, placeholder } from "@codemirror/view";
 import { defaultKeymap } from "@codemirror/commands";
 import { markdown } from "@codemirror/lang-markdown";
+import { checkboxPlugin } from "../codemirror/checkboxPlugin";
 import { markdownDecoratorPlugin, markdownTheme } from "../codemirror/markdownDecorations";
 import type { Note } from "../types/notes";
+import {
+  applyRedo,
+  applyUndo,
+  createHistorySnapshot,
+  createUndoRedoState,
+  diffToCommand,
+  recordCommand,
+  restoreHistorySnapshot,
+  sealBurst,
+  type UndoRedoHistorySnapshot,
+} from "../editor/undoRedo";
 
 interface NoteEditorProps {
   note: Note | null;
@@ -31,6 +43,10 @@ export function NoteEditor({
   const valueRef = useRef(value);
   const onChangeRef = useRef(onChange);
   const onAutoSaveRef = useRef(onAutoSave);
+  const undoRedoRef = useRef(createUndoRedoState());
+  const undoHistoryByNoteRef = useRef<Map<string, UndoRedoHistorySnapshot>>(new Map());
+  const activeHistoryKeyRef = useRef<string | null>(note?.path ?? note?.id ?? null);
+  const suppressHistoryRef = useRef(false);
   const isEditable = Boolean(note) && !isReadOnly;
   const placeholderText = note
     ? isReadOnly
@@ -58,9 +74,87 @@ export function NoteEditor({
     const container = containerRef.current;
     if (!container) return;
 
+    const applyContent = (view: EditorView, nextContent: string) => {
+      const currentContent = view.state.doc.toString();
+      if (currentContent === nextContent) {
+        return true;
+      }
+
+      suppressHistoryRef.current = true;
+      view.dispatch({
+        changes: { from: 0, to: currentContent.length, insert: nextContent },
+      });
+      suppressHistoryRef.current = false;
+      return true;
+    };
+
+    const customHistoryKeymap = keymap.of([
+      {
+        key: "Mod-z",
+        run: (view) => {
+          const currentContent = view.state.doc.toString();
+          const nextContent = applyUndo(undoRedoRef.current, currentContent);
+          return applyContent(view, nextContent);
+        },
+      },
+      {
+        key: "Mod-y",
+        run: (view) => {
+          const currentContent = view.state.doc.toString();
+          const nextContent = applyRedo(undoRedoRef.current, currentContent);
+          return applyContent(view, nextContent);
+        },
+      },
+      {
+        key: "Mod-Shift-z",
+        run: (view) => {
+          const currentContent = view.state.doc.toString();
+          const nextContent = applyRedo(undoRedoRef.current, currentContent);
+          return applyContent(view, nextContent);
+        },
+      },
+    ]);
+
+    const eventHandlers = EditorView.domEventHandlers({
+      keydown: (event, view) => {
+        if (event.key === "Enter") {
+          sealBurst(undoRedoRef.current);
+        }
+
+        const selection = view.state.selection.main;
+        if ((event.key === "Backspace" || event.key === "Delete") && !selection.empty) {
+          sealBurst(undoRedoRef.current);
+        }
+
+        return false;
+      },
+      paste: () => {
+        sealBurst(undoRedoRef.current);
+        return false;
+      },
+    });
+
     const updateListener = EditorView.updateListener.of((update) => {
       if (update.docChanged) {
-        onChangeRef.current(update.state.doc.toString());
+        const nextValue = update.state.doc.toString();
+        const previousValue = valueRef.current;
+
+        if (!suppressHistoryRef.current) {
+          const command = diffToCommand(previousValue, nextValue);
+          if (command) {
+            recordCommand(undoRedoRef.current, command);
+          }
+        }
+
+        valueRef.current = nextValue;
+        onChangeRef.current(nextValue);
+      } else if (update.selectionSet) {
+        const movedCursor =
+          update.startState.selection.main.head !== update.state.selection.main.head ||
+          update.startState.selection.main.anchor !== update.state.selection.main.anchor;
+        if (movedCursor) {
+          sealBurst(undoRedoRef.current);
+        }
       }
     });
 
@@ -68,10 +162,13 @@ export function NoteEditor({
       doc: initialStateRef.current.value,
       extensions: [
         markdown(),
+        checkboxPlugin,
         markdownDecoratorPlugin,
         markdownTheme,
         EditorView.lineWrapping,
+        customHistoryKeymap,
         keymap.of(defaultKeymap),
+        eventHandlers,
         updateListener,
         editableCompartment.of(EditorView.editable.of(initialStateRef.current.isEditable)),
         placeholderCompartment.of(placeholder(initialStateRef.current.placeholder)),
@@ -108,6 +205,23 @@ export function NoteEditor({
   }, [note?.path]);
 
   useEffect(() => {
+    const nextKey = note?.path ?? note?.id ?? null;
+    const previousKey = activeHistoryKeyRef.current;
+    if (previousKey === nextKey) return;
+
+    const state = undoRedoRef.current;
+    sealBurst(state);
+
+    if (previousKey) {
+      undoHistoryByNoteRef.current.set(previousKey, createHistorySnapshot(state));
+    }
+
+    const restored = nextKey ? undoHistoryByNoteRef.current.get(nextKey) : null;
+    restoreHistorySnapshot(state, restored);
+    activeHistoryKeyRef.current = nextKey;
+  }, [note?.id, note?.path]);
+
+  useEffect(() => {
     const view = viewRef.current;
     if (!view) return;
 
@@ -120,9 +234,12 @@ export function NoteEditor({
 
     const currentValue = view.state.doc.toString();
     if (currentValue !== value) {
+      sealBurst(undoRedoRef.current);
+      suppressHistoryRef.current = true;
       view.dispatch({
         changes: { from: 0, to: currentValue.length, insert: value },
       });
+      suppressHistoryRef.current = false;
     }
   }, [editableCompartment, isEditable, placeholderCompartment, placeholderText, value]);
 

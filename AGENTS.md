@@ -15,4 +15,3 @@ npm run build
 ## Rules
 - Fix all TypeScript errors — do not use `any` or `@ts-ignore` to silence them
 - Fix all ESLint errors — do not disable rules inline without explaining why
-- When searching for strings in the codebase, always use git grep instead of recursive grep or find commands.
