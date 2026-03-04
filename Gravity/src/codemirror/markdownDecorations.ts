@@ -167,4 +167,11 @@ export const markdownTheme = EditorView.baseTheme({
   ".md-image": {
     opacity: 0.9,
   },
+  ".md-checkbox": {
+    cursor: "pointer",
+    verticalAlign: "middle",
+    margin: 0,
+    padding: 0,
+    accentColor: "#528bff",
+  },
 });

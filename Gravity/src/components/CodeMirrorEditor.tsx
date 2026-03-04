@@ -3,6 +3,7 @@ import { EditorState } from "@codemirror/state";
 import { EditorView, keymap, placeholder } from "@codemirror/view";
 import { defaultKeymap } from "@codemirror/commands";
 import { markdown } from "@codemirror/lang-markdown";
+import { checkboxPlugin } from "../codemirror/checkboxPlugin";
 import { markdownDecoratorPlugin, markdownTheme } from "../codemirror/markdownDecorations";
 
 export interface CodeMirrorEditorProps {
@@ -26,6 +27,7 @@ export function CodeMirrorEditor({
       doc: initialDoc,
       extensions: [
         markdown(),
+        checkboxPlugin,
         markdownDecoratorPlugin,
         markdownTheme,
         keymap.of(defaultKeymap),
