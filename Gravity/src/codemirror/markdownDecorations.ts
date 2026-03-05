@@ -1,81 +1,20 @@
-import { DecorationSet, EditorView, ViewPlugin, ViewUpdate } from "@codemirror/view";
+import { DecorationSet, EditorView } from "@codemirror/view";
+import { StateField } from "@codemirror/state";
 import { syntaxTree } from "@codemirror/language";
 import { buildDecorations } from "./decorationBuilder";
 
-export const markdownDecoratorPlugin = ViewPlugin.fromClass(
-  class {
-    decorations: DecorationSet;
-    pendingUpdate = false;
-    rafId: number | null = null;
-    timeoutId: number | null = null;
-    lastView: EditorView | null = null;
-    initialRafId: number | null = null;
-
-    constructor(view: EditorView) {
-      this.decorations = buildDecorations(view);
-      this.lastView = view;
-
-      if (view.visibleRanges.length === 0) {
-        this.initialRafId = window.requestAnimationFrame(() => {
-          this.decorations = buildDecorations(view);
-          this.initialRafId = null;
-        });
-      }
-    }
-
-    update(update: ViewUpdate): void {
-      const treeChanged = syntaxTree(update.startState) !== syntaxTree(update.state);
-
-      if (update.viewportChanged || update.selectionSet || treeChanged) {
-        this.decorations = buildDecorations(update.view);
-        return;
-      }
-
-      if (update.docChanged) {
-        this.decorations = this.decorations.map(update.changes);
-      }
-
-      this.lastView = update.view;
-
-      if (this.pendingUpdate) {
-        return;
-      }
-
-      this.pendingUpdate = true;
-      this.rafId = window.requestAnimationFrame(() => {
-        this.timeoutId = window.setTimeout(() => {
-          const view = this.lastView;
-          if (view) {
-            this.decorations = buildDecorations(view);
-          }
-          this.pendingUpdate = false;
-          this.rafId = null;
-          this.timeoutId = null;
-        }, 50);
-      });
-    }
-
-    destroy(): void {
-      if (this.initialRafId !== null) {
-        window.cancelAnimationFrame(this.initialRafId);
-        this.initialRafId = null;
-      }
-      if (this.rafId !== null) {
-        window.cancelAnimationFrame(this.rafId);
-        this.rafId = null;
-      }
-      if (this.timeoutId !== null) {
-        window.clearTimeout(this.timeoutId);
-        this.timeoutId = null;
-      }
-      this.pendingUpdate = false;
-      this.lastView = null;
-    }
+export const markdownDecoratorPlugin = StateField.define<DecorationSet>({
+  create(state) {
+    return buildDecorations(state);
   },
-  {
-    decorations: (value) => value.decorations,
-  }
-);
+  update(value, tr) {
+    if (tr.docChanged || tr.selection || syntaxTree(tr.startState) !== syntaxTree(tr.state)) {
+      return buildDecorations(tr.state);
+    }
+    return value;
+  },
+  provide: (f) => EditorView.decorations.from(f),
+});
 
 export const markdownTheme = EditorView.baseTheme({
   // Line decorations
@@ -148,14 +87,57 @@ export const markdownTheme = EditorView.baseTheme({
     color: "rgba(80, 80, 80, 0.95)",
     fontStyle: "italic",
   },
-  ".md-code-block": {
-    fontFamily:
-      "ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, 'Liberation Mono', 'Courier New', monospace",
-    fontSize: "0.9em",
-    backgroundColor: "rgba(135, 131, 120, 0.15)",
+  ".md-codeblock": {
+    position: "relative",
+    backgroundColor: "#1e1e2e",
     borderRadius: "6px",
-    padding: "0.5em 0.75em",
-    display: "inline-block",
+    margin: "8px 0",
+    overflow: "hidden",
+  },
+  ".md-codeblock pre": {
+    margin: "0",
+    padding: "16px",
+    overflowX: "auto",
+    fontFamily: '"JetBrains Mono", "Fira Code", monospace',
+    fontSize: "13px",
+    lineHeight: "1.6",
+  },
+  ".md-codeblock code": {
+    backgroundColor: "transparent",
+    padding: "0",
+    color: "#cdd6f4",
+  },
+  ".md-codeblock-lang-badge": {
+    position: "absolute",
+    top: "6px",
+    right: "48px",
+    fontSize: "11px",
+    color: "#6c7086",
+    fontFamily: "sans-serif",
+    pointerEvents: "none",
+    textTransform: "lowercase",
+  },
+  ".md-codeblock-copy": {
+    position: "absolute",
+    top: "4px",
+    right: "8px",
+    backgroundColor: "transparent",
+    border: "none",
+    color: "#6c7086",
+    fontSize: "11px",
+    cursor: "pointer",
+    padding: "2px 6px",
+    borderRadius: "4px",
+    fontFamily: "sans-serif",
+    opacity: "0",
+    transition: "opacity 0.15s",
+  },
+  ".md-codeblock:hover .md-codeblock-copy": {
+    opacity: "1",
+  },
+  ".md-codeblock-copy:hover": {
+    color: "#cdd6f4",
+    backgroundColor: "#313244",
   },
 
   // Links / images
