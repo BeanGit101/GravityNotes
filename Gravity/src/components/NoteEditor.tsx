@@ -2,9 +2,11 @@ import { type ReactNode, useEffect, useMemo, useRef } from "react";
 import { Compartment, EditorState } from "@codemirror/state";
 import { EditorView, keymap, placeholder } from "@codemirror/view";
 import { defaultKeymap } from "@codemirror/commands";
+import { lintGutter } from "@codemirror/lint";
 import { markdown } from "@codemirror/lang-markdown";
 import { checkboxPlugin } from "../codemirror/checkboxPlugin";
 import { markdownDecoratorPlugin, markdownTheme } from "../codemirror/markdownDecorations";
+import { spellLinter } from "../editor/spellLinter";
 import type { Note } from "../types/notes";
 import {
   applyRedo,
@@ -165,6 +167,8 @@ export function NoteEditor({
         checkboxPlugin,
         markdownDecoratorPlugin,
         markdownTheme,
+        lintGutter(),
+        spellLinter,
         EditorView.lineWrapping,
         customHistoryKeymap,
         keymap.of(defaultKeymap),
