@@ -7,6 +7,7 @@ interface EditorPaneProps {
   value: string;
   isActive: boolean;
   isLoading: boolean;
+  isPreviewMode: boolean;
   onFocus: () => void;
   onClose: () => void;
   onChange: (value: string) => void;
@@ -18,6 +19,7 @@ export function EditorPane({
   value,
   isActive,
   isLoading,
+  isPreviewMode,
   onFocus,
   onClose,
   onChange,
@@ -40,7 +42,8 @@ export function EditorPane({
         onChange={onChange}
         onAutoSave={onAutoSave}
         isActive={isActive}
-        isReadOnly={isLoading}
+        isLoading={isLoading}
+        isPreviewMode={isPreviewMode}
         toolbarActions={
           <button
             className="editor-pane__close"

@@ -133,22 +133,38 @@ export function buildDecorations(state: EditorState): DecorationSet {
 
       if (node.name === "ATXHeading1") {
         const line = state.doc.lineAt(node.from);
-        ranges.push({ from: line.from, to: line.from, deco: Decoration.line({ class: "md-h1-line" }) });
+        ranges.push({
+          from: line.from,
+          to: line.from,
+          deco: Decoration.line({ class: "md-h1-line" }),
+        });
       }
 
       if (node.name === "ATXHeading2") {
         const line = state.doc.lineAt(node.from);
-        ranges.push({ from: line.from, to: line.from, deco: Decoration.line({ class: "md-h2-line" }) });
+        ranges.push({
+          from: line.from,
+          to: line.from,
+          deco: Decoration.line({ class: "md-h2-line" }),
+        });
       }
 
       if (node.name === "ATXHeading3") {
         const line = state.doc.lineAt(node.from);
-        ranges.push({ from: line.from, to: line.from, deco: Decoration.line({ class: "md-h3-line" }) });
+        ranges.push({
+          from: line.from,
+          to: line.from,
+          deco: Decoration.line({ class: "md-h3-line" }),
+        });
       }
 
       if (node.name === "Blockquote") {
         const line = state.doc.lineAt(node.from);
-        ranges.push({ from: line.from, to: line.from, deco: Decoration.line({ class: "md-blockquote-line" }) });
+        ranges.push({
+          from: line.from,
+          to: line.from,
+          deco: Decoration.line({ class: "md-blockquote-line" }),
+        });
       }
 
       if (SIMPLE_MARKER_NODE_NAMES.has(node.name)) {
@@ -186,12 +202,8 @@ export function buildDecorations(state: EditorState): DecorationSet {
     },
   });
 
-  const cmDecorations = ranges.map((d) => d.deco.range(d.from, d.to));
-  cmDecorations.sort((a, b) => {
-    const aSide = "startSide" in a.value ? a.value.startSide : 0;
-    const bSide = "startSide" in b.value ? b.value.startSide : 0;
-    return a.from - b.from || aSide - bSide;
-  });
-
-  return RangeSet.of(cmDecorations, true);
+  return RangeSet.of(
+    ranges.map((range) => range.deco.range(range.from, range.to)),
+    true
+  );
 }
