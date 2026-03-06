@@ -1,5 +1,3 @@
-@import url("https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,500;9..144,700&family=Space+Grotesk:wght@400;500;600;700&display=swap");
-
 :root {
   color-scheme: light;
   --ink: #12131a;
@@ -397,14 +395,146 @@ body {
 }
 
 .note-editor__surface {
+  position: relative;
   flex: 1;
   background: var(--surface-strong);
-  overflow-y: auto;
+  overflow: hidden;
   min-height: 0;
 }
 
-.note-editor__surface .cm-editor {
+.note-editor__surface--preview {
+  background: #fcfbf9;
+}
+
+.note-editor__preview-layer {
+  position: absolute;
+  inset: 0;
+  overflow-y: auto;
+  padding: 1.5rem 1.75rem;
+}
+
+.note-editor__preview-empty {
+  margin: 0;
+  color: var(--muted);
+}
+
+.note-editor__editor-layer {
   height: 100%;
+  overflow-y: auto;
+}
+
+.note-editor__editor-layer .cm-editor {
+  height: 100%;
+}
+
+.note-editor__editor-layer--hidden {
+  position: absolute;
+  inset: 0;
+  opacity: 0;
+  pointer-events: none;
+}
+
+.markdown-preview {
+  color: var(--ink);
+  line-height: 1.65;
+}
+
+.markdown-preview h1,
+.markdown-preview h2,
+.markdown-preview h3,
+.markdown-preview h4,
+.markdown-preview h5,
+.markdown-preview h6 {
+  font-family: "Fraunces", "Georgia", serif;
+  line-height: 1.25;
+  margin-top: 1.3em;
+  margin-bottom: 0.55em;
+}
+
+.markdown-preview h1 {
+  font-size: 1.9rem;
+  border-bottom: 1px solid rgba(18, 19, 26, 0.12);
+  padding-bottom: 0.2em;
+}
+
+.markdown-preview h2 {
+  font-size: 1.5rem;
+}
+
+.markdown-preview h3 {
+  font-size: 1.3rem;
+}
+
+.markdown-preview p,
+.markdown-preview ul,
+.markdown-preview ol,
+.markdown-preview blockquote,
+.markdown-preview pre,
+.markdown-preview table {
+  margin: 0.9em 0;
+}
+
+.markdown-preview__blockquote {
+  border-left: 3px solid rgba(18, 19, 26, 0.3);
+  margin-left: 0;
+  padding-left: 1rem;
+  color: #444a57;
+}
+
+.markdown-preview__pre {
+  overflow-x: auto;
+  background: #1f2430;
+  color: #e6e9ef;
+  border-radius: 8px;
+  padding: 0.9rem 1rem;
+}
+
+.markdown-preview__code {
+  font-family: "JetBrains Mono", "Fira Code", "SFMono-Regular", Menlo, monospace;
+  font-size: 0.9em;
+  background: rgba(18, 19, 26, 0.08);
+  border-radius: 4px;
+  padding: 0.12em 0.3em;
+}
+
+.markdown-preview__pre .markdown-preview__code {
+  background: transparent;
+  padding: 0;
+}
+
+.markdown-preview__table {
+  width: 100%;
+  border-collapse: collapse;
+  background: #fffdf9;
+  border: 1px solid rgba(18, 19, 26, 0.12);
+  border-radius: 8px;
+  overflow: hidden;
+}
+
+.markdown-preview__header-cell,
+.markdown-preview__cell {
+  border: 1px solid rgba(18, 19, 26, 0.12);
+  padding: 0.5rem 0.65rem;
+  text-align: left;
+}
+
+.markdown-preview__header-cell {
+  background: rgba(248, 211, 91, 0.18);
+}
+
+.markdown-preview__list {
+  padding-left: 1.35rem;
+}
+
+.markdown-preview__list-item {
+  margin: 0.25rem 0;
+}
+
+.markdown-preview__task-checkbox {
+  margin-right: 0.45rem;
+  transform: translateY(1px);
+  accent-color: #528bff;
+  cursor: pointer;
 }
 
 .cm-lintRange-error {
@@ -458,6 +588,11 @@ body {
   background: var(--surface-strong);
   cursor: pointer;
   color: var(--muted);
+}
+
+.editor-pane__mode {
+  padding: 0.35rem 0.85rem;
+  font-size: 0.75rem;
 }
 
 .note-list__menu {

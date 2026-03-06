@@ -1,22 +1,20 @@
+import type { PaneState } from "../state/paneReducer";
+import type { NoteViewMode } from "../types/editor";
 import type { Note } from "../types/notes";
 import { EditorPane } from "./EditorPane";
 
 export type PaneLayout = "single" | "vertical" | "grid";
 
-export interface PaneState {
-  id: string;
-  noteId: string;
-}
-
 interface PaneContainerProps {
   panes: PaneState[];
   activePaneId: string | null;
   getNoteById: (noteId: string) => Note | null;
+  getNoteViewMode: (noteId: string) => NoteViewMode;
   noteContents: Record<string, string>;
   loadingNoteIds: Set<string>;
-  isPreviewMode: boolean;
   onActivatePane: (paneId: string) => void;
   onClosePane: (paneId: string) => void;
+  onToggleNoteViewMode: (noteId: string) => void;
   onChangeNote: (noteId: string, value: string) => void;
   onAutoSaveNote: (noteId: string, value: string) => Promise<void>;
 }
@@ -65,11 +63,12 @@ export function PaneContainer({
   panes,
   activePaneId,
   getNoteById,
+  getNoteViewMode,
   noteContents,
   loadingNoteIds,
-  isPreviewMode,
   onActivatePane,
   onClosePane,
+  onToggleNoteViewMode,
   onChangeNote,
   onAutoSaveNote,
 }: PaneContainerProps) {
@@ -89,6 +88,7 @@ export function PaneContainer({
         const note = getNoteById(pane.noteId);
         const hasContent = Object.prototype.hasOwnProperty.call(noteContents, pane.noteId);
         const value = noteContents[pane.noteId] ?? "";
+        const viewMode = getNoteViewMode(pane.noteId);
         const isLoading = loadingNoteIds.has(pane.noteId) || !hasContent;
         const isActive = activePaneId === pane.id;
         const position = getPanePosition(index, panes.length);
@@ -109,12 +109,15 @@ export function PaneContainer({
               value={value}
               isActive={isActive}
               isLoading={isLoading}
-              isPreviewMode={isPreviewMode}
+              viewMode={viewMode}
               onFocus={() => {
                 onActivatePane(pane.id);
               }}
               onClose={() => {
                 onClosePane(pane.id);
+              }}
+              onToggleViewMode={() => {
+                onToggleNoteViewMode(pane.noteId);
               }}
               onChange={(nextValue) => {
                 onChangeNote(pane.noteId, nextValue);

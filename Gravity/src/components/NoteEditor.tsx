@@ -1,13 +1,15 @@
 import { type ReactNode, useEffect, useMemo, useRef } from "react";
+import { defaultKeymap } from "@codemirror/commands";
+import { markdown } from "@codemirror/lang-markdown";
+import { lintGutter } from "@codemirror/lint";
 import { Compartment, EditorState } from "@codemirror/state";
 import { EditorView, keymap, placeholder } from "@codemirror/view";
-import { defaultKeymap } from "@codemirror/commands";
-import { lintGutter } from "@codemirror/lint";
-import { markdown } from "@codemirror/lang-markdown";
+import { GFM } from "@lezer/markdown";
 import { checkboxPlugin, checkboxToggleFacet } from "../codemirror/checkboxPlugin";
 import { markdownDecoratorPlugin, markdownTheme } from "../codemirror/markdownDecorations";
+import { MarkdownPreview } from "./MarkdownPreview";
 import { spellLinter } from "../editor/spellLinter";
-import type { Note } from "../types/notes";
+import { toggleNthTaskMarker } from "../editor/taskList";
 import {
   applyRedo,
   applyUndo,
@@ -19,6 +21,9 @@ import {
   sealBurst,
   type UndoRedoHistorySnapshot,
 } from "../editor/undoRedo";
+import { createSaveController } from "../state/saveController";
+import type { NoteViewMode } from "../types/editor";
+import type { Note } from "../types/notes";
 
 interface NoteEditorProps {
   note: Note | null;
@@ -27,7 +32,7 @@ interface NoteEditorProps {
   onAutoSave: (value: string) => Promise<void>;
   toolbarActions?: ReactNode;
   isActive?: boolean;
-  isPreviewMode?: boolean;
+  viewMode?: NoteViewMode;
   isLoading?: boolean;
 }
 
@@ -38,7 +43,7 @@ export function NoteEditor({
   onAutoSave,
   toolbarActions,
   isActive = false,
-  isPreviewMode = false,
+  viewMode = "edit",
   isLoading = false,
 }: NoteEditorProps) {
   const containerRef = useRef<HTMLDivElement>(null);
@@ -47,19 +52,24 @@ export function NoteEditor({
   const valueRef = useRef(value);
   const onChangeRef = useRef(onChange);
   const onAutoSaveRef = useRef(onAutoSave);
+  const saveControllerRef = useRef(createSaveController());
   const undoRedoRef = useRef(createUndoRedoState());
   const undoHistoryByNoteRef = useRef<Map<string, UndoRedoHistorySnapshot>>(new Map());
   const activeHistoryKeyRef = useRef<string | null>(note?.path ?? note?.id ?? null);
   const suppressHistoryRef = useRef(false);
-  const canToggleCheckboxes = Boolean(note) && !isLoading;
-  const isEditable = canToggleCheckboxes && !isPreviewMode;
+
+  const isPreviewMode = viewMode === "preview";
+  const canToggleCheckboxes = Boolean(note) && !isLoading && !isPreviewMode;
+  const isEditable = canToggleCheckboxes;
+
   const placeholderText = note
     ? isLoading
       ? "Loading note..."
       : isPreviewMode
-        ? "Preview mode (checkboxes are still interactive)."
+        ? "Preview mode is active."
         : "Start writing your note..."
     : "Select or create a note to begin.";
+
   const initialStateRef = useRef({
     value,
     isEditable,
@@ -170,7 +180,7 @@ export function NoteEditor({
     const state = EditorState.create({
       doc: initialStateRef.current.value,
       extensions: [
-        markdown(),
+        markdown({ extensions: [GFM] }),
         checkboxPlugin,
         markdownDecoratorPlugin,
         markdownTheme,
@@ -233,6 +243,7 @@ export function NoteEditor({
     const restored = nextKey ? undoHistoryByNoteRef.current.get(nextKey) : null;
     restoreHistorySnapshot(state, restored);
     activeHistoryKeyRef.current = nextKey;
+    saveControllerRef.current.reset();
   }, [note?.id, note?.path]);
 
   useEffect(() => {
@@ -270,21 +281,48 @@ export function NoteEditor({
     if (!note || isLoading) return;
     if (value === lastSavedRef.current) return;
 
+    const pendingValue = value;
     const handle = window.setTimeout(() => {
-      void (async () => {
-        try {
-          await onAutoSaveRef.current(value);
-          lastSavedRef.current = value;
-        } catch {
+      void saveControllerRef.current
+        .save(
+          pendingValue,
+          async (nextValue) => onAutoSaveRef.current(nextValue),
+          (committedValue) => {
+            lastSavedRef.current = committedValue;
+          }
+        )
+        .catch(() => {
           // Save status handled upstream.
-        }
-      })();
+        });
     }, 1000);
 
     return () => {
       window.clearTimeout(handle);
     };
   }, [isLoading, note, value]);
+
+  const handleTogglePreviewTask = (taskIndex: number) => {
+    if (!note || isLoading) {
+      return;
+    }
+
+    const currentValue = valueRef.current;
+    const nextValue = toggleNthTaskMarker(currentValue, taskIndex);
+    if (nextValue === currentValue) {
+      return;
+    }
+
+    valueRef.current = nextValue;
+    onChangeRef.current(nextValue);
+  };
+
+  const previewContent = !note ? (
+    <p className="note-editor__preview-empty">Select or create a note to preview.</p>
+  ) : isLoading ? (
+    <p className="note-editor__preview-empty">Loading note...</p>
+  ) : (
+    <MarkdownPreview value={value} onToggleTask={handleTogglePreviewTask} />
+  );
 
   return (
     <section className={`note-editor ${isActive ? "note-editor--active" : ""}`}>
@@ -295,7 +333,16 @@ export function NoteEditor({
         </div>
         {toolbarActions && <div className="note-editor__actions">{toolbarActions}</div>}
       </div>
-      <div className="note-editor__surface" ref={containerRef} />
+      <div
+        className={`note-editor__surface ${isPreviewMode ? "note-editor__surface--preview" : ""}`}
+      >
+        {isPreviewMode && <div className="note-editor__preview-layer">{previewContent}</div>}
+        <div
+          className={`note-editor__editor-layer ${isPreviewMode ? "note-editor__editor-layer--hidden" : ""}`}
+          ref={containerRef}
+          aria-hidden={isPreviewMode}
+        />
+      </div>
     </section>
   );
 }

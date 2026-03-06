@@ -1,3 +1,4 @@
+﻿import { Facet } from "@codemirror/state";
 import {
   Decoration,
   type DecorationSet,
@@ -7,13 +8,19 @@ import {
   type ViewUpdate,
   WidgetType,
 } from "@codemirror/view";
-import { Facet } from "@codemirror/state";
 
 export const checkboxToggleFacet = Facet.define<boolean, boolean>({
   combine(values) {
     return values.some(Boolean);
   },
 });
+
+export function getCheckboxToggleInsert(checked: boolean, canToggle: boolean): string | null {
+  if (!canToggle) {
+    return null;
+  }
+  return checked ? "[ ]" : "[x]";
+}
 
 class CheckboxWidget extends WidgetType {
   constructor(
@@ -36,7 +43,11 @@ class CheckboxWidget extends WidgetType {
 
     checkbox.addEventListener("mousedown", (event: MouseEvent) => {
       event.preventDefault();
-      if (!this.view.state.facet(checkboxToggleFacet)) {
+      const replacement = getCheckboxToggleInsert(
+        this.checked,
+        this.view.state.facet(checkboxToggleFacet)
+      );
+      if (!replacement) {
         return;
       }
 
@@ -44,7 +55,7 @@ class CheckboxWidget extends WidgetType {
         changes: {
           from: this.from,
           to: this.from + 3,
-          insert: this.checked ? "[ ]" : "[x]",
+          insert: replacement,
         },
       });
     });

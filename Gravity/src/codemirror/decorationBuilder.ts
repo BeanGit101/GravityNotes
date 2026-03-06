@@ -1,5 +1,5 @@
 import { Decoration, DecorationSet, WidgetType } from "@codemirror/view";
-import { RangeSet, EditorState } from "@codemirror/state";
+import { EditorState, RangeSet } from "@codemirror/state";
 import { syntaxTree } from "@codemirror/language";
 import type { SyntaxNodeRef } from "@lezer/common";
 
@@ -8,6 +8,8 @@ const NODE_DECORATORS: Record<string, Decoration> = {
   ATXHeading1: Decoration.mark({ class: "md-h1" }),
   ATXHeading2: Decoration.mark({ class: "md-h2" }),
   ATXHeading3: Decoration.mark({ class: "md-h3" }),
+  SetextHeading1: Decoration.mark({ class: "md-h1" }),
+  SetextHeading2: Decoration.mark({ class: "md-h2" }),
 
   // Inline
   Emphasis: Decoration.mark({ class: "md-italic" }),
@@ -19,6 +21,20 @@ const NODE_DECORATORS: Record<string, Decoration> = {
   Blockquote: Decoration.mark({ class: "md-blockquote" }),
   Link: Decoration.mark({ class: "md-link" }),
   Image: Decoration.mark({ class: "md-image" }),
+
+  // Tables
+  Table: Decoration.mark({ class: "md-table" }),
+  TableHeader: Decoration.mark({ class: "md-table-header" }),
+  TableCell: Decoration.mark({ class: "md-table-cell" }),
+  TableDelimiter: Decoration.mark({ class: "md-table-delimiter" }),
+};
+
+const HEADING_LINE_CLASSES: Record<string, string> = {
+  ATXHeading1: "md-h1-line",
+  SetextHeading1: "md-h1-line",
+  ATXHeading2: "md-h2-line",
+  SetextHeading2: "md-h2-line",
+  ATXHeading3: "md-h3-line",
 };
 
 const HIDDEN_MARKER_DECORATION = Decoration.replace({});
@@ -36,6 +52,7 @@ const SIMPLE_MARKER_NODE_NAMES = new Set([
 
 const LINK_DESTINATION_NODE_NAMES = new Set(["URL", "LinkTitle"]);
 const LINK_MARKER_TEXT_TO_HIDE = new Set(["(", ")"]);
+
 class CodeBlockWidget extends WidgetType {
   constructor(
     readonly code: string,
@@ -62,11 +79,13 @@ class CodeBlockWidget extends WidgetType {
     copyBtn.className = "md-codeblock-copy";
     copyBtn.textContent = "Copy";
 
-    copyBtn.addEventListener("mousedown", (e) => {
-      e.preventDefault();
+    copyBtn.addEventListener("mousedown", (event) => {
+      event.preventDefault();
       void navigator.clipboard.writeText(this.code).then(() => {
         copyBtn.textContent = "Copied!";
-        setTimeout(() => (copyBtn.textContent = "Copy"), 2000);
+        setTimeout(() => {
+          copyBtn.textContent = "Copy";
+        }, 2000);
       });
     });
 
@@ -131,30 +150,13 @@ export function buildDecorations(state: EditorState): DecorationSet {
         });
       }
 
-      if (node.name === "ATXHeading1") {
+      const headingLineClass = HEADING_LINE_CLASSES[node.name];
+      if (headingLineClass) {
         const line = state.doc.lineAt(node.from);
         ranges.push({
           from: line.from,
           to: line.from,
-          deco: Decoration.line({ class: "md-h1-line" }),
-        });
-      }
-
-      if (node.name === "ATXHeading2") {
-        const line = state.doc.lineAt(node.from);
-        ranges.push({
-          from: line.from,
-          to: line.from,
-          deco: Decoration.line({ class: "md-h2-line" }),
-        });
-      }
-
-      if (node.name === "ATXHeading3") {
-        const line = state.doc.lineAt(node.from);
-        ranges.push({
-          from: line.from,
-          to: line.from,
-          deco: Decoration.line({ class: "md-h3-line" }),
+          deco: Decoration.line({ class: headingLineClass }),
         });
       }
 
@@ -202,7 +204,7 @@ export function buildDecorations(state: EditorState): DecorationSet {
     },
   });
 
-  const cmDecorations = ranges.map((d) => d.deco.range(d.from, d.to));
+  const cmDecorations = ranges.map((range) => range.deco.range(range.from, range.to));
   cmDecorations.sort((a, b) => {
     const aSide = "startSide" in a.value ? a.value.startSide : 0;
     const bSide = "startSide" in b.value ? b.value.startSide : 0;

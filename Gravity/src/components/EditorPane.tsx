@@ -1,15 +1,17 @@
 import type { MouseEvent } from "react";
-import { NoteEditor } from "./NoteEditor";
+import type { NoteViewMode } from "../types/editor";
 import type { Note } from "../types/notes";
+import { NoteEditor } from "./NoteEditor";
 
 interface EditorPaneProps {
   note: Note | null;
   value: string;
   isActive: boolean;
   isLoading: boolean;
-  isPreviewMode: boolean;
+  viewMode: NoteViewMode;
   onFocus: () => void;
   onClose: () => void;
+  onToggleViewMode: () => void;
   onChange: (value: string) => void;
   onAutoSave: (value: string) => Promise<void>;
 }
@@ -19,15 +21,21 @@ export function EditorPane({
   value,
   isActive,
   isLoading,
-  isPreviewMode,
+  viewMode,
   onFocus,
   onClose,
+  onToggleViewMode,
   onChange,
   onAutoSave,
 }: EditorPaneProps) {
   const handleClose = (event: MouseEvent<HTMLButtonElement>) => {
     event.stopPropagation();
     onClose();
+  };
+
+  const handleToggleViewMode = (event: MouseEvent<HTMLButtonElement>) => {
+    event.stopPropagation();
+    onToggleViewMode();
   };
 
   return (
@@ -43,16 +51,25 @@ export function EditorPane({
         onAutoSave={onAutoSave}
         isActive={isActive}
         isLoading={isLoading}
-        isPreviewMode={isPreviewMode}
+        viewMode={viewMode}
         toolbarActions={
-          <button
-            className="editor-pane__close"
-            type="button"
-            onClick={handleClose}
-            aria-label="Close pane"
-          >
-            Close
-          </button>
+          <>
+            <button
+              className="button button--secondary editor-pane__mode"
+              type="button"
+              onClick={handleToggleViewMode}
+            >
+              {viewMode === "preview" ? "Switch to Edit" : "Switch to Preview"}
+            </button>
+            <button
+              className="editor-pane__close"
+              type="button"
+              onClick={handleClose}
+              aria-label="Close pane"
+            >
+              Close
+            </button>
+          </>
         }
       />
     </div>

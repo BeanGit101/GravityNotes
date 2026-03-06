@@ -16,7 +16,7 @@ interface NoteListProps {
   errorMessage: string | null;
 }
 
-function countNotes(items: FileSystemItem[]): number {
+export function countNotes(items: FileSystemItem[]): number {
   return items.reduce((total, item) => {
     if (item.type === "file") {
       return total + 1;
@@ -174,7 +174,7 @@ export function NoteList({
                 aria-label={`${isExpanded ? "Collapse" : "Expand"} ${item.name}`}
                 disabled={!hasChildren}
               >
-                {isExpanded ? "▾" : "▸"}
+                {isExpanded ? "\u25BE" : "\u25B8"}
               </button>
               <button
                 className="note-list__select note-list__select--folder"

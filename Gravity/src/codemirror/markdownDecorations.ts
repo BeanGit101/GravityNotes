@@ -1,6 +1,6 @@
-import { DecorationSet, EditorView } from "@codemirror/view";
 import { StateField } from "@codemirror/state";
 import { syntaxTree } from "@codemirror/language";
+import { DecorationSet, EditorView } from "@codemirror/view";
 import { buildDecorations } from "./decorationBuilder";
 
 export const markdownDecoratorPlugin = StateField.define<DecorationSet>({
@@ -13,7 +13,7 @@ export const markdownDecoratorPlugin = StateField.define<DecorationSet>({
     }
     return value;
   },
-  provide: (f) => EditorView.decorations.from(f),
+  provide: (field) => EditorView.decorations.from(field),
 });
 
 export const markdownTheme = EditorView.baseTheme({
@@ -138,6 +138,22 @@ export const markdownTheme = EditorView.baseTheme({
   ".md-codeblock-copy:hover": {
     color: "#cdd6f4",
     backgroundColor: "#313244",
+  },
+
+  // Table decorations
+  ".md-table": {
+    backgroundColor: "rgba(82, 139, 255, 0.04)",
+    borderRadius: "4px",
+  },
+  ".md-table-header": {
+    fontWeight: "700",
+    color: "#2f415f",
+  },
+  ".md-table-cell": {
+    color: "#1f2937",
+  },
+  ".md-table-delimiter": {
+    opacity: 0.6,
   },
 
   // Links / images

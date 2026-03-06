@@ -2,16 +2,16 @@ import {
   useCallback,
   useEffect,
   useMemo,
+  useReducer,
   useRef,
   useState,
   type CSSProperties,
   type PointerEvent as ReactPointerEvent,
 } from "react";
 import "./App.css";
-import { NoteList } from "./components/NoteList";
 import { NoteEditor } from "./components/NoteEditor";
-import { PaneContainer, type PaneState } from "./components/PaneContainer";
-import type { FileSystemItem, Note } from "./types/notes";
+import { NoteList } from "./components/NoteList";
+import { PaneContainer } from "./components/PaneContainer";
 import {
   createFolder,
   createNote,
@@ -22,6 +22,9 @@ import {
   selectNotesDirectory,
   updateNote,
 } from "./services/notesService";
+import { initialPaneSessionState, paneSessionReducer, type OpenMode } from "./state/paneReducer";
+import type { NoteViewMode } from "./types/editor";
+import type { FileSystemItem, Note } from "./types/notes";
 
 function folderExists(items: FileSystemItem[], path: string): boolean {
   for (const item of items) {
@@ -37,22 +40,39 @@ function folderExists(items: FileSystemItem[], path: string): boolean {
   return false;
 }
 
+function collectNoteIds(items: FileSystemItem[]): Set<string> {
+  const ids = new Set<string>();
+
+  const visit = (entries: FileSystemItem[]) => {
+    entries.forEach((entry) => {
+      if (entry.type === "file") {
+        ids.add(entry.id);
+      } else {
+        visit(entry.children);
+      }
+    });
+  };
+
+  visit(items);
+  return ids;
+}
+
 function App() {
   const SIDEBAR_WIDTH_KEY = "gravity.sidebarWidth";
   const SIDEBAR_MIN_WIDTH = 200;
   const SIDEBAR_COLLAPSED_WIDTH = 64;
   const SIDEBAR_MAX_RATIO = 0.6;
+
   const [notesDirectory, setNotesDirectory] = useState(getNotesDirectory());
   const [notes, setNotes] = useState<FileSystemItem[]>([]);
-  const [openPanes, setOpenPanes] = useState<PaneState[]>([]);
-  const [activePaneId, setActivePaneId] = useState<string | null>(null);
+  const [paneSession, dispatchPane] = useReducer(paneSessionReducer, initialPaneSessionState);
   const [noteContents, setNoteContents] = useState<Record<string, string>>({});
+  const [noteViewModes, setNoteViewModes] = useState<Record<string, NoteViewMode>>({});
   const [loadingNoteIds, setLoadingNoteIds] = useState<Set<string>>(() => new Set());
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [isLoading, setIsLoading] = useState(false);
   const [selectedFolderPath, setSelectedFolderPath] = useState<string | null>(null);
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
-  const [isPreviewMode, setIsPreviewMode] = useState(false);
   const [sidebarWidth, setSidebarWidth] = useState(() => {
     if (typeof window === "undefined") {
       return 280;
@@ -65,6 +85,7 @@ function App() {
     }
     return Math.min(Math.max(parsed, SIDEBAR_MIN_WIDTH), maxWidth);
   });
+
   const resizeStateRef = useRef<{ startX: number; startWidth: number } | null>(null);
   const loadingRef = useRef<Set<string>>(new Set());
   const cryptoRef = useRef((globalThis as { crypto?: Crypto }).crypto);
@@ -80,30 +101,52 @@ function App() {
         }
       });
     };
+
     walk(notes);
     return map;
   }, [notes]);
 
   const getNoteById = useCallback((noteId: string) => noteIndex.get(noteId) ?? null, [noteIndex]);
 
+  const getNoteViewMode = useCallback(
+    (noteId: string): NoteViewMode => noteViewModes[noteId] ?? "edit",
+    [noteViewModes]
+  );
+
+  const toggleNoteViewMode = useCallback((noteId: string) => {
+    setNoteViewModes((current) => {
+      const nextMode = (current[noteId] ?? "edit") === "edit" ? "preview" : "edit";
+      return { ...current, [noteId]: nextMode };
+    });
+  }, []);
+
   const loadNotes = useCallback(async () => {
     if (!notesDirectory) {
       setNotes([]);
-      setOpenPanes([]);
-      setActivePaneId(null);
+      dispatchPane({ type: "reset" });
       setNoteContents({});
+      setNoteViewModes({});
       setLoadingNoteIds(new Set());
       return;
     }
 
     setIsLoading(true);
     setErrorMessage(null);
+
     try {
       const entries = await listNotesWithFolders();
       setNotes(entries);
       setSelectedFolderPath((current) => {
         if (!current) return current;
         return folderExists(entries, current) ? current : null;
+      });
+
+      const existingIds = collectNoteIds(entries);
+      setNoteViewModes((current) => {
+        const next = Object.fromEntries(
+          Object.entries(current).filter(([noteId]) => existingIds.has(noteId))
+        ) as Record<string, NoteViewMode>;
+        return next;
       });
     } catch (error) {
       console.error(error);
@@ -126,7 +169,6 @@ function App() {
     };
 
     window.addEventListener("resize", handleResize);
-
     return () => {
       window.removeEventListener("resize", handleResize);
     };
@@ -144,9 +186,9 @@ function App() {
       if (directory) {
         setNotesDirectory(directory);
         setSelectedFolderPath(null);
-        setOpenPanes([]);
-        setActivePaneId(null);
+        dispatchPane({ type: "reset" });
         setNoteContents({});
+        setNoteViewModes({});
         setLoadingNoteIds(new Set());
       }
     } catch (error) {
@@ -165,7 +207,6 @@ function App() {
       if (loadingRef.current.has(noteId)) return;
 
       loadingRef.current.add(noteId);
-
       setLoadingNoteIds((current) => new Set(current).add(noteId));
 
       try {
@@ -187,46 +228,22 @@ function App() {
   );
 
   const openNoteInPane = useCallback(
-    async (note: Note, mode: "active" | "new") => {
+    async (note: Note, mode: OpenMode) => {
       setErrorMessage(null);
-      const createPaneId = () => {
-        if (cryptoRef.current?.randomUUID) {
-          return cryptoRef.current.randomUUID();
-        }
-        return `${String(Date.now())}-${Math.random().toString(16).slice(2)}`;
-      };
+      const newPaneId = cryptoRef.current?.randomUUID
+        ? cryptoRef.current.randomUUID()
+        : `${String(Date.now())}-${Math.random().toString(16).slice(2)}`;
 
-      setOpenPanes((current) => {
-        const existing = current.find((pane) => pane.noteId === note.id);
-        if (existing) {
-          setActivePaneId(existing.id);
-          return current;
-        }
-
-        if (mode === "new" && current.length < 4) {
-          const id = createPaneId();
-          setActivePaneId(id);
-          return [...current, { id, noteId: note.id }];
-        }
-
-        if (current.length > 0) {
-          const targetId = activePaneId ?? current[0]?.id;
-          if (targetId) {
-            setActivePaneId(targetId);
-            return current.map((pane) =>
-              pane.id === targetId ? { ...pane, noteId: note.id } : pane
-            );
-          }
-        }
-
-        const id = createPaneId();
-        setActivePaneId(id);
-        return [...current, { id, noteId: note.id }];
+      dispatchPane({
+        type: "open-note",
+        noteId: note.id,
+        mode,
+        newPaneId,
       });
 
       await ensureNoteLoaded(note);
     },
-    [activePaneId, ensureNoteLoaded]
+    [ensureNoteLoaded]
   );
 
   const handleCreateNote = async (title: string) => {
@@ -247,16 +264,15 @@ function App() {
     try {
       await deleteNote(note.path);
       await loadNotes();
-      setOpenPanes((current) => {
-        const remaining = current.filter((pane) => pane.noteId !== note.id);
-        setActivePaneId((active) => {
-          if (!active) return remaining[0]?.id ?? null;
-          return remaining.some((pane) => pane.id === active) ? active : (remaining[0]?.id ?? null);
-        });
-        return remaining;
-      });
+      dispatchPane({ type: "remove-note", noteId: note.id });
       setNoteContents((current) => {
         return Object.fromEntries(Object.entries(current).filter(([key]) => key !== note.id));
+      });
+      setNoteViewModes((current) => {
+        const next = Object.fromEntries(
+          Object.entries(current).filter(([key]) => key !== note.id)
+        ) as Record<string, NoteViewMode>;
+        return next;
       });
       setLoadingNoteIds((current) => {
         const next = new Set(current);
@@ -284,6 +300,7 @@ function App() {
   const handleAutoSave = async (noteId: string, nextValue: string) => {
     const note = getNoteById(noteId);
     if (!note) return;
+
     try {
       await updateNote(note.path, nextValue);
     } catch (error) {
@@ -297,23 +314,18 @@ function App() {
   };
 
   const handleClosePane = (paneId: string) => {
-    setOpenPanes((current) => {
-      const remaining = current.filter((pane) => pane.id !== paneId);
-      setActivePaneId((active) => {
-        if (active !== paneId) return active;
-        return remaining[0]?.id ?? null;
-      });
-      return remaining;
-    });
+    dispatchPane({ type: "close-pane", paneId });
   };
 
   const handleSidebarPointerDown = (event: ReactPointerEvent<HTMLDivElement>) => {
     if (event.button !== 0) return;
     if ((event.target as HTMLElement).closest("button")) return;
     event.preventDefault();
+
     if (sidebarCollapsed) {
       setSidebarCollapsed(false);
     }
+
     resizeStateRef.current = { startX: event.clientX, startWidth: sidebarWidth };
 
     const handlePointerMove = (moveEvent: PointerEvent) => {
@@ -335,7 +347,8 @@ function App() {
     window.addEventListener("pointerup", handlePointerUp);
   };
 
-  const activeNoteId = openPanes.find((pane) => pane.id === activePaneId)?.noteId ?? null;
+  const activeNoteId =
+    paneSession.panes.find((pane) => pane.id === paneSession.activePaneId)?.noteId ?? null;
   const resolvedSidebarWidth = sidebarCollapsed ? SIDEBAR_COLLAPSED_WIDTH : sidebarWidth;
 
   return (
@@ -391,7 +404,7 @@ function App() {
           }}
           aria-label={sidebarCollapsed ? "Expand sidebar" : "Collapse sidebar"}
         >
-          {sidebarCollapsed ? "»" : "«"}
+          {sidebarCollapsed ? "\u00BB" : "\u00AB"}
         </button>
       </div>
 
@@ -405,28 +418,22 @@ function App() {
             <span className="app-header__label">
               {notesDirectory ? "Vault connected" : "No vault selected"}
             </span>
-            <button
-              className="button button--secondary"
-              type="button"
-              onClick={() => {
-                setIsPreviewMode((current) => !current);
-              }}
-            >
-              {isPreviewMode ? "Switch to Edit" : "Switch to Preview"}
-            </button>
           </div>
         </header>
 
-        {openPanes.length > 0 ? (
+        {paneSession.panes.length > 0 ? (
           <PaneContainer
-            panes={openPanes}
-            activePaneId={activePaneId}
+            panes={paneSession.panes}
+            activePaneId={paneSession.activePaneId}
             getNoteById={getNoteById}
+            getNoteViewMode={getNoteViewMode}
             noteContents={noteContents}
             loadingNoteIds={loadingNoteIds}
-            isPreviewMode={isPreviewMode}
-            onActivatePane={setActivePaneId}
+            onActivatePane={(paneId) => {
+              dispatchPane({ type: "activate-pane", paneId });
+            }}
             onClosePane={handleClosePane}
+            onToggleNoteViewMode={toggleNoteViewMode}
             onChangeNote={handleChangeNoteContent}
             onAutoSaveNote={handleAutoSave}
           />
@@ -437,7 +444,7 @@ function App() {
             onChange={() => {}}
             onAutoSave={async () => {}}
             isLoading
-            isPreviewMode={isPreviewMode}
+            viewMode="edit"
           />
         )}
       </section>
