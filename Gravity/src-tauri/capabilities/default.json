@@ -6,15 +6,6 @@
   "permissions": [
     "core:default",
     "dialog:default",
-    "fs:default",
-    "fs:allow-write-text-file",
-    "fs:allow-remove",
-    "fs:allow-exists",
-    "fs:allow-read-dir",
-    "opener:default",
-    {
-      "identifier": "fs:scope",
-      "allow": [{ "path": "$HOME/**" }]
-    }
+    "opener:default"
   ]
 }
