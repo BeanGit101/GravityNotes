@@ -2,6 +2,7 @@ import {
   useCallback,
   useEffect,
   useMemo,
+  useReducer,
   useRef,
   useState,
   type CSSProperties,
@@ -23,6 +24,105 @@ import {
   updateNote,
 } from "./services/notesService";
 
+interface PaneManagerState {
+  panes: PaneState[];
+  activePaneId: string | null;
+}
+
+type PaneManagerAction =
+  | { type: "reset" }
+  | { type: "activate"; paneId: string }
+  | { type: "openNote"; noteId: string; mode: "active" | "new"; newPaneId: string }
+  | { type: "closePane"; paneId: string }
+  | { type: "removeNote"; noteId: string };
+
+const MAX_OPEN_PANES = 4;
+const INITIAL_PANE_MANAGER_STATE: PaneManagerState = {
+  panes: [],
+  activePaneId: null,
+};
+
+function paneManagerReducer(state: PaneManagerState, action: PaneManagerAction): PaneManagerState {
+  switch (action.type) {
+    case "reset": {
+      return INITIAL_PANE_MANAGER_STATE;
+    }
+
+    case "activate": {
+      if (!state.panes.some((pane) => pane.id === action.paneId)) {
+        return state;
+      }
+      return {
+        ...state,
+        activePaneId: action.paneId,
+      };
+    }
+
+    case "openNote": {
+      const existing = state.panes.find((pane) => pane.noteId === action.noteId);
+      if (existing) {
+        return {
+          panes: state.panes,
+          activePaneId: existing.id,
+        };
+      }
+
+      if (action.mode === "new" && state.panes.length < MAX_OPEN_PANES) {
+        return {
+          panes: [...state.panes, { id: action.newPaneId, noteId: action.noteId }],
+          activePaneId: action.newPaneId,
+        };
+      }
+
+      if (state.panes.length > 0) {
+        const targetPaneId = state.activePaneId ?? state.panes[0]?.id;
+        if (targetPaneId) {
+          return {
+            panes: state.panes.map((pane) =>
+              pane.id === targetPaneId ? { ...pane, noteId: action.noteId } : pane
+            ),
+            activePaneId: targetPaneId,
+          };
+        }
+      }
+
+      return {
+        panes: [...state.panes, { id: action.newPaneId, noteId: action.noteId }],
+        activePaneId: action.newPaneId,
+      };
+    }
+
+    case "closePane": {
+      const remaining = state.panes.filter((pane) => pane.id !== action.paneId);
+      if (state.activePaneId !== action.paneId) {
+        return {
+          panes: remaining,
+          activePaneId: state.activePaneId,
+        };
+      }
+      return {
+        panes: remaining,
+        activePaneId: remaining[0]?.id ?? null,
+      };
+    }
+
+    case "removeNote": {
+      const remaining = state.panes.filter((pane) => pane.noteId !== action.noteId);
+      const activeStillExists = state.activePaneId
+        ? remaining.some((pane) => pane.id === state.activePaneId)
+        : false;
+      return {
+        panes: remaining,
+        activePaneId: activeStillExists ? state.activePaneId : (remaining[0]?.id ?? null),
+      };
+    }
+
+    default: {
+      return state;
+    }
+  }
+}
+
 function folderExists(items: FileSystemItem[], path: string): boolean {
   for (const item of items) {
     if (item.type === "folder") {
@@ -42,10 +142,13 @@ function App() {
   const SIDEBAR_MIN_WIDTH = 200;
   const SIDEBAR_COLLAPSED_WIDTH = 64;
   const SIDEBAR_MAX_RATIO = 0.6;
+
   const [notesDirectory, setNotesDirectory] = useState(getNotesDirectory());
   const [notes, setNotes] = useState<FileSystemItem[]>([]);
-  const [openPanes, setOpenPanes] = useState<PaneState[]>([]);
-  const [activePaneId, setActivePaneId] = useState<string | null>(null);
+  const [paneState, dispatchPaneAction] = useReducer(
+    paneManagerReducer,
+    INITIAL_PANE_MANAGER_STATE
+  );
   const [noteContents, setNoteContents] = useState<Record<string, string>>({});
   const [loadingNoteIds, setLoadingNoteIds] = useState<Set<string>>(() => new Set());
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
@@ -65,9 +168,12 @@ function App() {
     }
     return Math.min(Math.max(parsed, SIDEBAR_MIN_WIDTH), maxWidth);
   });
+
   const resizeStateRef = useRef<{ startX: number; startWidth: number } | null>(null);
   const loadingRef = useRef<Set<string>>(new Set());
   const cryptoRef = useRef((globalThis as { crypto?: Crypto }).crypto);
+  const saveRevisionRef = useRef<Map<string, number>>(new Map());
+  const saveQueueRef = useRef<Map<string, Promise<void>>>(new Map());
 
   const noteIndex = useMemo(() => {
     const map = new Map<string, Note>();
@@ -86,13 +192,23 @@ function App() {
 
   const getNoteById = useCallback((noteId: string) => noteIndex.get(noteId) ?? null, [noteIndex]);
 
+  const resetAutoSaveState = useCallback(() => {
+    saveRevisionRef.current.clear();
+    saveQueueRef.current.clear();
+  }, []);
+
+  const clearAutoSaveStateForNote = useCallback((noteId: string) => {
+    saveRevisionRef.current.delete(noteId);
+    saveQueueRef.current.delete(noteId);
+  }, []);
+
   const loadNotes = useCallback(async () => {
     if (!notesDirectory) {
       setNotes([]);
-      setOpenPanes([]);
-      setActivePaneId(null);
+      dispatchPaneAction({ type: "reset" });
       setNoteContents({});
       setLoadingNoteIds(new Set());
+      resetAutoSaveState();
       return;
     }
 
@@ -111,7 +227,7 @@ function App() {
     } finally {
       setIsLoading(false);
     }
-  }, [notesDirectory]);
+  }, [notesDirectory, resetAutoSaveState]);
 
   useEffect(() => {
     void loadNotes();
@@ -126,7 +242,6 @@ function App() {
     };
 
     window.addEventListener("resize", handleResize);
-
     return () => {
       window.removeEventListener("resize", handleResize);
     };
@@ -144,10 +259,10 @@ function App() {
       if (directory) {
         setNotesDirectory(directory);
         setSelectedFolderPath(null);
-        setOpenPanes([]);
-        setActivePaneId(null);
+        dispatchPaneAction({ type: "reset" });
         setNoteContents({});
         setLoadingNoteIds(new Set());
+        resetAutoSaveState();
       }
     } catch (error) {
       console.error(error);
@@ -165,7 +280,6 @@ function App() {
       if (loadingRef.current.has(noteId)) return;
 
       loadingRef.current.add(noteId);
-
       setLoadingNoteIds((current) => new Set(current).add(noteId));
 
       try {
@@ -189,44 +303,20 @@ function App() {
   const openNoteInPane = useCallback(
     async (note: Note, mode: "active" | "new") => {
       setErrorMessage(null);
-      const createPaneId = () => {
-        if (cryptoRef.current?.randomUUID) {
-          return cryptoRef.current.randomUUID();
-        }
-        return `${String(Date.now())}-${Math.random().toString(16).slice(2)}`;
-      };
+      const newPaneId =
+        cryptoRef.current?.randomUUID() ??
+        `${String(Date.now())}-${Math.random().toString(16).slice(2)}`;
 
-      setOpenPanes((current) => {
-        const existing = current.find((pane) => pane.noteId === note.id);
-        if (existing) {
-          setActivePaneId(existing.id);
-          return current;
-        }
-
-        if (mode === "new" && current.length < 4) {
-          const id = createPaneId();
-          setActivePaneId(id);
-          return [...current, { id, noteId: note.id }];
-        }
-
-        if (current.length > 0) {
-          const targetId = activePaneId ?? current[0]?.id;
-          if (targetId) {
-            setActivePaneId(targetId);
-            return current.map((pane) =>
-              pane.id === targetId ? { ...pane, noteId: note.id } : pane
-            );
-          }
-        }
-
-        const id = createPaneId();
-        setActivePaneId(id);
-        return [...current, { id, noteId: note.id }];
+      dispatchPaneAction({
+        type: "openNote",
+        noteId: note.id,
+        mode,
+        newPaneId,
       });
 
       await ensureNoteLoaded(note);
     },
-    [activePaneId, ensureNoteLoaded]
+    [ensureNoteLoaded]
   );
 
   const handleCreateNote = async (title: string) => {
@@ -247,14 +337,7 @@ function App() {
     try {
       await deleteNote(note.path);
       await loadNotes();
-      setOpenPanes((current) => {
-        const remaining = current.filter((pane) => pane.noteId !== note.id);
-        setActivePaneId((active) => {
-          if (!active) return remaining[0]?.id ?? null;
-          return remaining.some((pane) => pane.id === active) ? active : (remaining[0]?.id ?? null);
-        });
-        return remaining;
-      });
+      dispatchPaneAction({ type: "removeNote", noteId: note.id });
       setNoteContents((current) => {
         return Object.fromEntries(Object.entries(current).filter(([key]) => key !== note.id));
       });
@@ -263,6 +346,7 @@ function App() {
         next.delete(note.id);
         return next;
       });
+      clearAutoSaveStateForNote(note.id);
     } catch (error) {
       console.error(error);
       setErrorMessage("Unable to delete the note.");
@@ -281,30 +365,46 @@ function App() {
     }
   };
 
-  const handleAutoSave = async (noteId: string, nextValue: string) => {
-    const note = getNoteById(noteId);
-    if (!note) return;
-    try {
-      await updateNote(note.path, nextValue);
-    } catch (error) {
-      console.error(error);
-      setErrorMessage("Auto-save failed. Check disk access.");
-    }
-  };
+  const handleAutoSave = useCallback(
+    async (noteId: string, nextValue: string) => {
+      const note = getNoteById(noteId);
+      if (!note) return;
+
+      const nextRevision = (saveRevisionRef.current.get(noteId) ?? 0) + 1;
+      saveRevisionRef.current.set(noteId, nextRevision);
+
+      const priorSave = saveQueueRef.current.get(noteId) ?? Promise.resolve();
+      const queuedSave = priorSave
+        .catch(() => undefined)
+        .then(async () => {
+          if ((saveRevisionRef.current.get(noteId) ?? 0) !== nextRevision) {
+            return;
+          }
+          await updateNote(note.path, nextValue);
+        });
+
+      saveQueueRef.current.set(noteId, queuedSave);
+
+      try {
+        await queuedSave;
+      } catch (error) {
+        console.error(error);
+        setErrorMessage("Auto-save failed. Check disk access.");
+      } finally {
+        if (saveQueueRef.current.get(noteId) === queuedSave) {
+          saveQueueRef.current.delete(noteId);
+        }
+      }
+    },
+    [getNoteById]
+  );
 
   const handleChangeNoteContent = (noteId: string, nextValue: string) => {
     setNoteContents((current) => ({ ...current, [noteId]: nextValue }));
   };
 
   const handleClosePane = (paneId: string) => {
-    setOpenPanes((current) => {
-      const remaining = current.filter((pane) => pane.id !== paneId);
-      setActivePaneId((active) => {
-        if (active !== paneId) return active;
-        return remaining[0]?.id ?? null;
-      });
-      return remaining;
-    });
+    dispatchPaneAction({ type: "closePane", paneId });
   };
 
   const handleSidebarPointerDown = (event: ReactPointerEvent<HTMLDivElement>) => {
@@ -335,7 +435,8 @@ function App() {
     window.addEventListener("pointerup", handlePointerUp);
   };
 
-  const activeNoteId = openPanes.find((pane) => pane.id === activePaneId)?.noteId ?? null;
+  const activeNoteId =
+    paneState.panes.find((pane) => pane.id === paneState.activePaneId)?.noteId ?? null;
   const resolvedSidebarWidth = sidebarCollapsed ? SIDEBAR_COLLAPSED_WIDTH : sidebarWidth;
 
   return (
@@ -417,15 +518,17 @@ function App() {
           </div>
         </header>
 
-        {openPanes.length > 0 ? (
+        {paneState.panes.length > 0 ? (
           <PaneContainer
-            panes={openPanes}
-            activePaneId={activePaneId}
+            panes={paneState.panes}
+            activePaneId={paneState.activePaneId}
             getNoteById={getNoteById}
             noteContents={noteContents}
             loadingNoteIds={loadingNoteIds}
             isPreviewMode={isPreviewMode}
-            onActivatePane={setActivePaneId}
+            onActivatePane={(paneId) => {
+              dispatchPaneAction({ type: "activate", paneId });
+            }}
             onClosePane={handleClosePane}
             onChangeNote={handleChangeNoteContent}
             onAutoSaveNote={handleAutoSave}

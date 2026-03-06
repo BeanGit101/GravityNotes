@@ -270,11 +270,15 @@ export function NoteEditor({
     if (!note || isLoading) return;
     if (value === lastSavedRef.current) return;
 
+    let isCancelled = false;
+
     const handle = window.setTimeout(() => {
       void (async () => {
         try {
           await onAutoSaveRef.current(value);
-          lastSavedRef.current = value;
+          if (!isCancelled) {
+            lastSavedRef.current = value;
+          }
         } catch {
           // Save status handled upstream.
         }
@@ -282,6 +286,7 @@ export function NoteEditor({
     }, 1000);
 
     return () => {
+      isCancelled = true;
       window.clearTimeout(handle);
     };
   }, [isLoading, note, value]);
