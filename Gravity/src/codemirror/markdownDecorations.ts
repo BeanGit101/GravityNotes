@@ -1,16 +1,33 @@
 import { DecorationSet, EditorView } from "@codemirror/view";
-import { StateField } from "@codemirror/state";
+import { EditorState, StateField } from "@codemirror/state";
 import { syntaxTree } from "@codemirror/language";
 import { buildDecorations } from "./decorationBuilder";
+
+function cursorLineNumber(viewState: EditorState): number {
+  return viewState.doc.lineAt(viewState.selection.main.head).number;
+}
 
 export const markdownDecoratorPlugin = StateField.define<DecorationSet>({
   create(state) {
     return buildDecorations(state);
   },
   update(value, tr) {
-    if (tr.docChanged || tr.selection || syntaxTree(tr.startState) !== syntaxTree(tr.state)) {
+    if (tr.docChanged) {
       return buildDecorations(tr.state);
     }
+
+    if (syntaxTree(tr.startState) !== syntaxTree(tr.state)) {
+      return buildDecorations(tr.state);
+    }
+
+    if (tr.selection) {
+      const startLine = cursorLineNumber(tr.startState);
+      const nextLine = cursorLineNumber(tr.state);
+      if (startLine !== nextLine) {
+        return buildDecorations(tr.state);
+      }
+    }
+
     return value;
   },
   provide: (f) => EditorView.decorations.from(f),

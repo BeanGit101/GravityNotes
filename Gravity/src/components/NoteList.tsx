@@ -16,13 +16,35 @@ interface NoteListProps {
   errorMessage: string | null;
 }
 
-function countNotes(items: FileSystemItem[]): number {
-  return items.reduce((total, item) => {
-    if (item.type === "file") {
-      return total + 1;
+interface NotesTreeStats {
+  totalNotes: number;
+  folderNoteCounts: Map<string, number>;
+}
+
+function buildNotesTreeStats(items: FileSystemItem[]): NotesTreeStats {
+  const folderNoteCounts = new Map<string, number>();
+
+  const countInTree = (entries: FileSystemItem[]): number => {
+    let total = 0;
+
+    for (const item of entries) {
+      if (item.type === "file") {
+        total += 1;
+        continue;
+      }
+
+      const childCount = countInTree(item.children);
+      folderNoteCounts.set(item.path, childCount);
+      total += childCount;
     }
-    return total + countNotes(item.children);
-  }, 0);
+
+    return total;
+  };
+
+  return {
+    totalNotes: countInTree(items),
+    folderNoteCounts,
+  };
 }
 
 function findFolderByPath(items: FileSystemItem[], path: string): FolderItem | null {
@@ -79,6 +101,8 @@ export function NoteList({
   } | null>(null);
   const canCreate = Boolean(directoryPath && newTitle.trim());
   const canCreateFolder = Boolean(directoryPath && newFolderName.trim());
+
+  const { totalNotes, folderNoteCounts } = useMemo(() => buildNotesTreeStats(notes), [notes]);
 
   const handleCreate = (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
@@ -145,7 +169,7 @@ export function NoteList({
       if (item.type === "folder") {
         const isExpanded = mergedExpandedFolders.has(item.path);
         const isSelected = selectedFolderPath === item.path;
-        const noteCount = countNotes(item.children);
+        const noteCount = folderNoteCounts.get(item.path) ?? 0;
         const hasChildren = item.children.length > 0;
 
         return (
@@ -325,7 +349,7 @@ export function NoteList({
 
       {directoryPath && (
         <ul className="note-list__items">
-          {countNotes(notes) === 0 && (
+          {totalNotes === 0 && (
             <li className="note-list__empty">No notes yet. Create the first one.</li>
           )}
           {renderItems(notes)}

@@ -202,12 +202,8 @@ export function buildDecorations(state: EditorState): DecorationSet {
     },
   });
 
-  const cmDecorations = ranges.map((d) => d.deco.range(d.from, d.to));
-  cmDecorations.sort((a, b) => {
-    const aSide = "startSide" in a.value ? a.value.startSide : 0;
-    const bSide = "startSide" in b.value ? b.value.startSide : 0;
-    return a.from - b.from || aSide - bSide;
-  });
-
-  return RangeSet.of(cmDecorations, true);
+  return RangeSet.of(
+    ranges.map((range) => range.deco.range(range.from, range.to)),
+    true
+  );
 }
