@@ -52,6 +52,7 @@ function App() {
   const [isLoading, setIsLoading] = useState(false);
   const [selectedFolderPath, setSelectedFolderPath] = useState<string | null>(null);
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
+  const [isPreviewMode, setIsPreviewMode] = useState(false);
   const [sidebarWidth, setSidebarWidth] = useState(() => {
     if (typeof window === "undefined") {
       return 280;
@@ -404,6 +405,15 @@ function App() {
             <span className="app-header__label">
               {notesDirectory ? "Vault connected" : "No vault selected"}
             </span>
+            <button
+              className="button button--secondary"
+              type="button"
+              onClick={() => {
+                setIsPreviewMode((current) => !current);
+              }}
+            >
+              {isPreviewMode ? "Switch to Edit" : "Switch to Preview"}
+            </button>
           </div>
         </header>
 
@@ -414,6 +424,7 @@ function App() {
             getNoteById={getNoteById}
             noteContents={noteContents}
             loadingNoteIds={loadingNoteIds}
+            isPreviewMode={isPreviewMode}
             onActivatePane={setActivePaneId}
             onClosePane={handleClosePane}
             onChangeNote={handleChangeNoteContent}
@@ -425,7 +436,8 @@ function App() {
             value=""
             onChange={() => {}}
             onAutoSave={async () => {}}
-            isReadOnly
+            isLoading
+            isPreviewMode={isPreviewMode}
           />
         )}
       </section>

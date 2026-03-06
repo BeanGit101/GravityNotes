@@ -14,6 +14,7 @@ interface PaneContainerProps {
   getNoteById: (noteId: string) => Note | null;
   noteContents: Record<string, string>;
   loadingNoteIds: Set<string>;
+  isPreviewMode: boolean;
   onActivatePane: (paneId: string) => void;
   onClosePane: (paneId: string) => void;
   onChangeNote: (noteId: string, value: string) => void;
@@ -66,6 +67,7 @@ export function PaneContainer({
   getNoteById,
   noteContents,
   loadingNoteIds,
+  isPreviewMode,
   onActivatePane,
   onClosePane,
   onChangeNote,
@@ -107,6 +109,7 @@ export function PaneContainer({
               value={value}
               isActive={isActive}
               isLoading={isLoading}
+              isPreviewMode={isPreviewMode}
               onFocus={() => {
                 onActivatePane(pane.id);
               }}

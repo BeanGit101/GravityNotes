@@ -7,6 +7,13 @@ import {
   type ViewUpdate,
   WidgetType,
 } from "@codemirror/view";
+import { Facet } from "@codemirror/state";
+
+export const checkboxToggleFacet = Facet.define<boolean, boolean>({
+  combine(values) {
+    return values.some(Boolean);
+  },
+});
 
 class CheckboxWidget extends WidgetType {
   constructor(
@@ -29,7 +36,7 @@ class CheckboxWidget extends WidgetType {
 
     checkbox.addEventListener("mousedown", (event: MouseEvent) => {
       event.preventDefault();
-      if (this.view.state.readOnly) {
+      if (!this.view.state.facet(checkboxToggleFacet)) {
         return;
       }
 
@@ -51,12 +58,14 @@ class CheckboxWidget extends WidgetType {
 }
 
 const checkboxDecorator = new MatchDecorator({
-  regexp: /\[([ x])]/g,
+  regexp: /\[([ xX])]/g,
   // CM6 intentionally suppresses decorations at the cursor position.
-  decoration: (match, view, pos) =>
-    Decoration.replace({
-      widget: new CheckboxWidget(match[1] === "x", pos, view),
-    }),
+  decoration: (match, view, pos) => {
+    const marker = match[1] ?? " ";
+    return Decoration.replace({
+      widget: new CheckboxWidget(marker.toLowerCase() === "x", pos, view),
+    });
+  },
 });
 
 export const checkboxPlugin = ViewPlugin.fromClass(

@@ -4,7 +4,7 @@ import { EditorView, keymap, placeholder } from "@codemirror/view";
 import { defaultKeymap } from "@codemirror/commands";
 import { lintGutter } from "@codemirror/lint";
 import { markdown } from "@codemirror/lang-markdown";
-import { checkboxPlugin } from "../codemirror/checkboxPlugin";
+import { checkboxPlugin, checkboxToggleFacet } from "../codemirror/checkboxPlugin";
 import { markdownDecoratorPlugin, markdownTheme } from "../codemirror/markdownDecorations";
 import { spellLinter } from "../editor/spellLinter";
 import type { Note } from "../types/notes";
@@ -27,7 +27,8 @@ interface NoteEditorProps {
   onAutoSave: (value: string) => Promise<void>;
   toolbarActions?: ReactNode;
   isActive?: boolean;
-  isReadOnly?: boolean;
+  isPreviewMode?: boolean;
+  isLoading?: boolean;
 }
 
 export function NoteEditor({
@@ -37,7 +38,8 @@ export function NoteEditor({
   onAutoSave,
   toolbarActions,
   isActive = false,
-  isReadOnly = false,
+  isPreviewMode = false,
+  isLoading = false,
 }: NoteEditorProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   const viewRef = useRef<EditorView | null>(null);
@@ -49,20 +51,25 @@ export function NoteEditor({
   const undoHistoryByNoteRef = useRef<Map<string, UndoRedoHistorySnapshot>>(new Map());
   const activeHistoryKeyRef = useRef<string | null>(note?.path ?? note?.id ?? null);
   const suppressHistoryRef = useRef(false);
-  const isEditable = Boolean(note) && !isReadOnly;
+  const canToggleCheckboxes = Boolean(note) && !isLoading;
+  const isEditable = canToggleCheckboxes && !isPreviewMode;
   const placeholderText = note
-    ? isReadOnly
+    ? isLoading
       ? "Loading note..."
-      : "Start writing your note..."
+      : isPreviewMode
+        ? "Preview mode (checkboxes are still interactive)."
+        : "Start writing your note..."
     : "Select or create a note to begin.";
   const initialStateRef = useRef({
     value,
     isEditable,
     placeholder: placeholderText,
+    canToggleCheckboxes,
   });
 
   const editableCompartment = useMemo(() => new Compartment(), []);
   const placeholderCompartment = useMemo(() => new Compartment(), []);
+  const checkboxToggleCompartment = useMemo(() => new Compartment(), []);
 
   useEffect(() => {
     onChangeRef.current = onChange;
@@ -176,6 +183,9 @@ export function NoteEditor({
         updateListener,
         editableCompartment.of(EditorView.editable.of(initialStateRef.current.isEditable)),
         placeholderCompartment.of(placeholder(initialStateRef.current.placeholder)),
+        checkboxToggleCompartment.of(
+          checkboxToggleFacet.of(initialStateRef.current.canToggleCheckboxes)
+        ),
         EditorView.theme({
           "&": { minHeight: "360px", fontSize: "0.98rem" },
           ".cm-content": { padding: "1.5rem 1.75rem" },
@@ -196,7 +206,7 @@ export function NoteEditor({
       view.destroy();
       viewRef.current = null;
     };
-  }, [editableCompartment, placeholderCompartment]);
+  }, [checkboxToggleCompartment, editableCompartment, placeholderCompartment]);
 
   useEffect(() => {
     valueRef.current = value;
@@ -233,6 +243,7 @@ export function NoteEditor({
       effects: [
         editableCompartment.reconfigure(EditorView.editable.of(isEditable)),
         placeholderCompartment.reconfigure(placeholder(placeholderText)),
+        checkboxToggleCompartment.reconfigure(checkboxToggleFacet.of(canToggleCheckboxes)),
       ],
     });
 
@@ -245,10 +256,18 @@ export function NoteEditor({
       });
       suppressHistoryRef.current = false;
     }
-  }, [editableCompartment, isEditable, placeholderCompartment, placeholderText, value]);
+  }, [
+    canToggleCheckboxes,
+    checkboxToggleCompartment,
+    editableCompartment,
+    isEditable,
+    placeholderCompartment,
+    placeholderText,
+    value,
+  ]);
 
   useEffect(() => {
-    if (!note || isReadOnly) return;
+    if (!note || isLoading) return;
     if (value === lastSavedRef.current) return;
 
     const handle = window.setTimeout(() => {
@@ -265,7 +284,7 @@ export function NoteEditor({
     return () => {
       window.clearTimeout(handle);
     };
-  }, [isReadOnly, note, value]);
+  }, [isLoading, note, value]);
 
   return (
     <section className={`note-editor ${isActive ? "note-editor--active" : ""}`}>
