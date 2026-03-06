@@ -26,105 +26,6 @@ import { initialPaneSessionState, paneSessionReducer, type OpenMode } from "./st
 import type { NoteViewMode } from "./types/editor";
 import type { FileSystemItem, Note } from "./types/notes";
 
-interface PaneManagerState {
-  panes: PaneState[];
-  activePaneId: string | null;
-}
-
-type PaneManagerAction =
-  | { type: "reset" }
-  | { type: "activate"; paneId: string }
-  | { type: "openNote"; noteId: string; mode: "active" | "new"; newPaneId: string }
-  | { type: "closePane"; paneId: string }
-  | { type: "removeNote"; noteId: string };
-
-const MAX_OPEN_PANES = 4;
-const INITIAL_PANE_MANAGER_STATE: PaneManagerState = {
-  panes: [],
-  activePaneId: null,
-};
-
-function paneManagerReducer(state: PaneManagerState, action: PaneManagerAction): PaneManagerState {
-  switch (action.type) {
-    case "reset": {
-      return INITIAL_PANE_MANAGER_STATE;
-    }
-
-    case "activate": {
-      if (!state.panes.some((pane) => pane.id === action.paneId)) {
-        return state;
-      }
-      return {
-        ...state,
-        activePaneId: action.paneId,
-      };
-    }
-
-    case "openNote": {
-      const existing = state.panes.find((pane) => pane.noteId === action.noteId);
-      if (existing) {
-        return {
-          panes: state.panes,
-          activePaneId: existing.id,
-        };
-      }
-
-      if (action.mode === "new" && state.panes.length < MAX_OPEN_PANES) {
-        return {
-          panes: [...state.panes, { id: action.newPaneId, noteId: action.noteId }],
-          activePaneId: action.newPaneId,
-        };
-      }
-
-      if (state.panes.length > 0) {
-        const targetPaneId = state.activePaneId ?? state.panes[0]?.id;
-        if (targetPaneId) {
-          return {
-            panes: state.panes.map((pane) =>
-              pane.id === targetPaneId ? { ...pane, noteId: action.noteId } : pane
-            ),
-            activePaneId: targetPaneId,
-          };
-        }
-      }
-
-      return {
-        panes: [...state.panes, { id: action.newPaneId, noteId: action.noteId }],
-        activePaneId: action.newPaneId,
-      };
-    }
-
-    case "closePane": {
-      const remaining = state.panes.filter((pane) => pane.id !== action.paneId);
-      if (state.activePaneId !== action.paneId) {
-        return {
-          panes: remaining,
-          activePaneId: state.activePaneId,
-        };
-      }
-      return {
-        panes: remaining,
-        activePaneId: remaining[0]?.id ?? null,
-      };
-    }
-
-    case "removeNote": {
-      const remaining = state.panes.filter((pane) => pane.noteId !== action.noteId);
-      const activeStillExists = state.activePaneId
-        ? remaining.some((pane) => pane.id === state.activePaneId)
-        : false;
-      return {
-        panes: remaining,
-        activePaneId: activeStillExists ? state.activePaneId : (remaining[0]?.id ?? null),
-      };
-    }
-
-    default: {
-      return state;
-    }
-  }
-}
-
 function folderExists(items: FileSystemItem[], path: string): boolean {
   for (const item of items) {
     if (item.type === "folder") {
@@ -188,8 +89,6 @@ function App() {
   const resizeStateRef = useRef<{ startX: number; startWidth: number } | null>(null);
   const loadingRef = useRef<Set<string>>(new Set());
   const cryptoRef = useRef((globalThis as { crypto?: Crypto }).crypto);
-  const saveRevisionRef = useRef<Map<string, number>>(new Map());
-  const saveQueueRef = useRef<Map<string, Promise<void>>>(new Map());
 
   const noteIndex = useMemo(() => {
     const map = new Map<string, Note>();
@@ -228,7 +127,6 @@ function App() {
       setNoteContents({});
       setNoteViewModes({});
       setLoadingNoteIds(new Set());
-      resetAutoSaveState();
       return;
     }
 
@@ -256,7 +154,7 @@ function App() {
     } finally {
       setIsLoading(false);
     }
-  }, [notesDirectory, resetAutoSaveState]);
+  }, [notesDirectory]);
 
   useEffect(() => {
     void loadNotes();
@@ -292,7 +190,6 @@ function App() {
         setNoteContents({});
         setNoteViewModes({});
         setLoadingNoteIds(new Set());
-        resetAutoSaveState();
       }
     } catch (error) {
       console.error(error);
@@ -382,7 +279,6 @@ function App() {
         next.delete(note.id);
         return next;
       });
-      clearAutoSaveStateForNote(note.id);
     } catch (error) {
       console.error(error);
       setErrorMessage("Unable to delete the note.");
@@ -401,39 +297,17 @@ function App() {
     }
   };
 
-  const handleAutoSave = useCallback(
-    async (noteId: string, nextValue: string) => {
-      const note = getNoteById(noteId);
-      if (!note) return;
+  const handleAutoSave = async (noteId: string, nextValue: string) => {
+    const note = getNoteById(noteId);
+    if (!note) return;
 
-      const nextRevision = (saveRevisionRef.current.get(noteId) ?? 0) + 1;
-      saveRevisionRef.current.set(noteId, nextRevision);
-
-      const priorSave = saveQueueRef.current.get(noteId) ?? Promise.resolve();
-      const queuedSave = priorSave
-        .catch(() => undefined)
-        .then(async () => {
-          if ((saveRevisionRef.current.get(noteId) ?? 0) !== nextRevision) {
-            return;
-          }
-          await updateNote(note.path, nextValue);
-        });
-
-      saveQueueRef.current.set(noteId, queuedSave);
-
-      try {
-        await queuedSave;
-      } catch (error) {
-        console.error(error);
-        setErrorMessage("Auto-save failed. Check disk access.");
-      } finally {
-        if (saveQueueRef.current.get(noteId) === queuedSave) {
-          saveQueueRef.current.delete(noteId);
-        }
-      }
-    },
-    [getNoteById]
-  );
+    try {
+      await updateNote(note.path, nextValue);
+    } catch (error) {
+      console.error(error);
+      setErrorMessage("Auto-save failed. Check disk access.");
+    }
+  };
 
   const handleChangeNoteContent = (noteId: string, nextValue: string) => {
     setNoteContents((current) => ({ ...current, [noteId]: nextValue }));

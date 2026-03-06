@@ -1,4 +1,4 @@
-import { StateField } from "@codemirror/state";
+import { EditorState, StateField } from "@codemirror/state";
 import { syntaxTree } from "@codemirror/language";
 import { DecorationSet, EditorView } from "@codemirror/view";
 import { buildDecorations } from "./decorationBuilder";

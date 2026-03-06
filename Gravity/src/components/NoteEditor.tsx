@@ -297,7 +297,6 @@ export function NoteEditor({
     }, 1000);
 
     return () => {
-      isCancelled = true;
       window.clearTimeout(handle);
     };
   }, [isLoading, note, value]);
