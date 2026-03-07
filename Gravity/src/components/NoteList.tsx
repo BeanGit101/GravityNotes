@@ -246,9 +246,9 @@ export function NoteList({
 
   // effectiveExpandedFolders = pruned user-expanded folders merged with auto-expanded folders
   const effectiveExpandedFolders = useMemo(() => {
-  const pruned = pruneExpandedFolders(expandedFolders, notes);
-  return expandFoldersForNoteSelection(notes, pruned, selectedNoteId);
-}, [expandedFolders, notes, selectedNoteId]);
+    const pruned = pruneExpandedFolders(expandedFolders, notes);
+    return expandFoldersForNoteSelection(notes, pruned, selectedNoteId);
+  }, [expandedFolders, notes, selectedNoteId]);
 
   const selectedFolderLabel = useMemo(() => {
     if (!selectedFolderPath) {
@@ -527,10 +527,10 @@ export function NoteList({
           </li>
         );
       }
-      
-  return renderNoteRow(item as Note, depth);
+
+      return renderNoteRow(item as Note, depth);
     });
-   
+
   return (
     <div className="note-list">
       <div className="note-list__header">
