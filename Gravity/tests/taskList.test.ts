@@ -24,6 +24,66 @@ describe("toggleNthTaskMarker", () => {
     );
   });
 
+  it("counts quoted tasks with the same index model as preview rendering", () => {
+    const doc = [
+      "- [ ] plain task",
+      "> - [ ] quoted task",
+      "> 1. [x] quoted ordered task",
+      "> > - [ ] nested quoted task",
+      "1. [ ] trailing task",
+    ].join("\n");
+
+    expect(toggleNthTaskMarker(doc, 1)).toBe(
+      [
+        "- [ ] plain task",
+        "> - [x] quoted task",
+        "> 1. [x] quoted ordered task",
+        "> > - [ ] nested quoted task",
+        "1. [ ] trailing task",
+      ].join("\n")
+    );
+
+    expect(toggleNthTaskMarker(doc, 2)).toBe(
+      [
+        "- [ ] plain task",
+        "> - [ ] quoted task",
+        "> 1. [ ] quoted ordered task",
+        "> > - [ ] nested quoted task",
+        "1. [ ] trailing task",
+      ].join("\n")
+    );
+  });
+
+  it("toggles inline checkbox markers by preview index", () => {
+    const doc = ["Status: - [ ] understood", "- [x] shipped", "Follow-up: - [x] verify logs"].join(
+      "\n"
+    );
+
+    expect(toggleNthTaskMarker(doc, 0)).toBe(
+      ["Status: - [x] understood", "- [x] shipped", "Follow-up: - [x] verify logs"].join("\n")
+    );
+
+    expect(toggleNthTaskMarker(doc, 2)).toBe(
+      ["Status: - [ ] understood", "- [x] shipped", "Follow-up: - [ ] verify logs"].join("\n")
+    );
+  });
+
+  it("ignores bare markers and checkbox-like text inside code", () => {
+    const doc = [
+      "[ ] standalone marker",
+      "Inline code `Status: - [ ] ignored` stays literal",
+      "Status: - [ ] interactive",
+    ].join("\n");
+
+    expect(toggleNthTaskMarker(doc, 0)).toBe(
+      [
+        "[ ] standalone marker",
+        "Inline code `Status: - [ ] ignored` stays literal",
+        "Status: - [x] interactive",
+      ].join("\n")
+    );
+  });
+
   it("returns the original document when the index does not match any task", () => {
     const doc = ["- [ ] one", "- [x] two"].join("\n");
     expect(toggleNthTaskMarker(doc, 99)).toBe(doc);
