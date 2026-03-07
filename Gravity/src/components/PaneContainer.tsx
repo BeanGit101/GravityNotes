@@ -1,6 +1,6 @@
 import type { PaneState } from "../state/paneReducer";
 import type { NoteViewMode } from "../types/editor";
-import type { Note } from "../types/notes";
+import type { Note, NoteDocument, NoteMetadata } from "../types/notes";
 import { EditorPane } from "./EditorPane";
 
 export type PaneLayout = "single" | "vertical" | "grid";
@@ -12,11 +12,13 @@ interface PaneContainerProps {
   getNoteViewMode: (noteId: string) => NoteViewMode;
   noteContents: Record<string, string>;
   loadingNoteIds: Set<string>;
+  availableTags: string[];
   onActivatePane: (paneId: string) => void;
   onClosePane: (paneId: string) => void;
   onToggleNoteViewMode: (noteId: string) => void;
   onChangeNote: (noteId: string, value: string) => void;
-  onAutoSaveNote: (noteId: string, value: string) => Promise<void>;
+  onChangeNoteMetadata: (noteId: string, metadata: NoteMetadata) => void;
+  onAutoSaveNote: (noteId: string, value: NoteDocument) => Promise<void>;
 }
 
 export function calculateLayout(paneCount: number): { columns: number; rows: number } {
@@ -66,10 +68,12 @@ export function PaneContainer({
   getNoteViewMode,
   noteContents,
   loadingNoteIds,
+  availableTags,
   onActivatePane,
   onClosePane,
   onToggleNoteViewMode,
   onChangeNote,
+  onChangeNoteMetadata,
   onAutoSaveNote,
 }: PaneContainerProps) {
   const layout = calculateLayout(panes.length);
@@ -110,6 +114,7 @@ export function PaneContainer({
               isActive={isActive}
               isLoading={isLoading}
               viewMode={viewMode}
+              availableTags={availableTags}
               onFocus={() => {
                 onActivatePane(pane.id);
               }}
@@ -121,6 +126,9 @@ export function PaneContainer({
               }}
               onChange={(nextValue) => {
                 onChangeNote(pane.noteId, nextValue);
+              }}
+              onMetadataChange={(metadata) => {
+                onChangeNoteMetadata(pane.noteId, metadata);
               }}
               onAutoSave={(nextValue) => onAutoSaveNote(pane.noteId, nextValue)}
             />

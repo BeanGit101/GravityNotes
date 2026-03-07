@@ -1,11 +1,14 @@
 import { useEffect, useMemo, useState, type CSSProperties, type FormEvent } from "react";
 import type { FileSystemItem, FolderItem, Note } from "../types/notes";
+import { normalizeTag } from "../utils/frontmatter";
 
 interface NoteListProps {
   directoryPath: string;
   notes: FileSystemItem[];
   selectedNoteId: string | null;
   selectedFolderPath: string | null;
+  availableTags: string[];
+  selectedTags: string[];
   onOpenVault: () => void;
   onCreateNote: (title: string) => void;
   onCreateFolder: (name: string) => void;
@@ -13,6 +16,8 @@ interface NoteListProps {
   onSelectNote: (note: Note) => void;
   onOpenInNewPane: (note: Note) => void;
   onDeleteNote: (note: Note) => void;
+  onToggleTagFilter: (tag: string) => void;
+  onClearTagFilters: () => void;
   errorMessage: string | null;
 }
 
@@ -77,11 +82,45 @@ function findFolderChainForNote(items: FileSystemItem[], noteId: string): string
   return null;
 }
 
+function noteMatchesSelectedTags(note: Note, selectedTags: string[]): boolean {
+  if (selectedTags.length === 0) {
+    return true;
+  }
+
+  const noteTags = new Set(note.tags.map((tag) => normalizeTag(tag).toLocaleLowerCase()));
+  return selectedTags.every((tag) => noteTags.has(normalizeTag(tag).toLocaleLowerCase()));
+}
+
+function filterNotesTree(items: FileSystemItem[], selectedTags: string[]): FileSystemItem[] {
+  const filtered: FileSystemItem[] = [];
+
+  items.forEach((item) => {
+    if (item.type === "file") {
+      if (noteMatchesSelectedTags(item, selectedTags)) {
+        filtered.push(item);
+      }
+      return;
+    }
+
+    const children = filterNotesTree(item.children, selectedTags);
+    if (children.length > 0) {
+      filtered.push({
+        ...item,
+        children,
+      });
+    }
+  });
+
+  return filtered;
+}
+
 export function NoteList({
   directoryPath,
   notes,
   selectedNoteId,
   selectedFolderPath,
+  availableTags,
+  selectedTags,
   onOpenVault,
   onCreateNote,
   onCreateFolder,
@@ -89,6 +128,8 @@ export function NoteList({
   onSelectNote,
   onOpenInNewPane,
   onDeleteNote,
+  onToggleTagFilter,
+  onClearTagFilters,
   errorMessage,
 }: NoteListProps) {
   const [newTitle, setNewTitle] = useState("");
@@ -102,7 +143,11 @@ export function NoteList({
   const canCreate = Boolean(directoryPath && newTitle.trim());
   const canCreateFolder = Boolean(directoryPath && newFolderName.trim());
 
-  const { totalNotes, folderNoteCounts } = useMemo(() => buildNotesTreeStats(notes), [notes]);
+  const filteredNotes = useMemo(() => filterNotesTree(notes, selectedTags), [notes, selectedTags]);
+  const { totalNotes, folderNoteCounts } = useMemo(
+    () => buildNotesTreeStats(filteredNotes),
+    [filteredNotes]
+  );
 
   const handleCreate = (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
@@ -130,9 +175,9 @@ export function NoteList({
     if (!selectedNoteId) {
       return new Set<string>();
     }
-    const chain = findFolderChainForNote(notes, selectedNoteId);
+    const chain = findFolderChainForNote(filteredNotes, selectedNoteId);
     return new Set(chain ?? []);
-  }, [notes, selectedNoteId]);
+  }, [filteredNotes, selectedNoteId]);
 
   const mergedExpandedFolders = useMemo(() => {
     const next = new Set(expandedFolders);
@@ -244,13 +289,18 @@ export function NoteList({
             }}
           >
             <button
-              className="note-list__select"
+              className="note-list__select note-list__select--file"
               type="button"
               onClick={() => {
                 onSelectNote(item);
               }}
             >
-              {item.title}
+              <span className="note-list__file-title">{item.title}</span>
+              {(item.subject || item.tags.length > 0) && (
+                <span className="note-list__file-meta">
+                  {item.subject ?? item.tags.map((tag) => `#${tag}`).join(" ")}
+                </span>
+              )}
             </button>
             <button
               className="note-list__split"
@@ -345,14 +395,56 @@ export function NoteList({
         </div>
       )}
 
+      {directoryPath && (
+        <div className="note-list__filters">
+          <div className="note-list__filters-header">
+            <div>
+              <p className="note-list__selection-label">Filter Tags</p>
+              <p className="note-list__filters-copy">All selected tags must match.</p>
+            </div>
+            {selectedTags.length > 0 && (
+              <button className="note-list__link" type="button" onClick={onClearTagFilters}>
+                Clear filters
+              </button>
+            )}
+          </div>
+          <div className="note-list__filter-tags">
+            {availableTags.map((tag) => {
+              const isActive = selectedTags.some(
+                (selectedTag) =>
+                  normalizeTag(selectedTag).toLocaleLowerCase() ===
+                  normalizeTag(tag).toLocaleLowerCase()
+              );
+
+              return (
+                <button
+                  key={tag}
+                  className={`note-list__tag-filter ${isActive ? "note-list__tag-filter--active" : ""}`}
+                  type="button"
+                  onClick={() => {
+                    onToggleTagFilter(tag);
+                  }}
+                >
+                  #{tag}
+                </button>
+              );
+            })}
+          </div>
+        </div>
+      )}
+
       {errorMessage && <p className="note-list__error">{errorMessage}</p>}
 
       {directoryPath && (
         <ul className="note-list__items">
           {totalNotes === 0 && (
-            <li className="note-list__empty">No notes yet. Create the first one.</li>
+            <li className="note-list__empty">
+              {selectedTags.length > 0
+                ? "No notes match the selected tags."
+                : "No notes yet. Create the first one."}
+            </li>
           )}
-          {renderItems(notes)}
+          {renderItems(filteredNotes)}
         </ul>
       )}
 

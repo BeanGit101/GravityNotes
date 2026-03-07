@@ -13,6 +13,31 @@ function normalizeSelection(selection: string | string[] | null): string | null 
   return selection ?? null;
 }
 
+function normalizeNote(note: Pick<Note, "id" | "title" | "path"> & Partial<Note>): Note {
+  return {
+    id: note.id,
+    title: note.title,
+    path: note.path,
+    subject: note.subject,
+    tags: Array.isArray(note.tags) ? note.tags : [],
+    updatedAt: note.updatedAt,
+  };
+}
+
+function normalizeFileSystemItem(item: FileSystemItem): FileSystemItem {
+  if (item.type === "file") {
+    return {
+      ...normalizeNote(item),
+      type: "file",
+    };
+  }
+
+  return {
+    ...item,
+    children: item.children.map((child) => normalizeFileSystemItem(child)),
+  };
+}
+
 function ensureNotesDirectory(): string {
   const directory = getNotesDirectory();
   if (!directory) {
@@ -47,7 +72,7 @@ function flattenNotes(items: FileSystemItem[]): Note[] {
   const visit = (entries: FileSystemItem[]) => {
     entries.forEach((entry) => {
       if (entry.type === "file") {
-        notes.push({ id: entry.id, title: entry.title, path: entry.path });
+        notes.push(normalizeNote(entry));
       } else {
         visit(entry.children);
       }
@@ -86,15 +111,17 @@ export async function listNotes(): Promise<Note[]> {
 
 export async function listNotesWithFolders(): Promise<FileSystemItem[]> {
   await ensureVaultSelected();
-  return invoke<FileSystemItem[]>("list_vault_entries");
+  const entries = await invoke<FileSystemItem[]>("list_vault_entries");
+  return entries.map((entry) => normalizeFileSystemItem(entry));
 }
 
 export async function createNote(title: string, folderPath?: string | null): Promise<Note> {
   await ensureVaultSelected();
-  return invoke<Note>("create_note", {
+  const note = await invoke<Note>("create_note", {
     title,
     folderPath: folderPath ?? null,
   });
+  return normalizeNote(note);
 }
 
 export async function createFolder(name: string, folderPath?: string | null): Promise<FolderItem> {

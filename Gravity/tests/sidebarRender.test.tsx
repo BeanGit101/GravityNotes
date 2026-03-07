@@ -17,6 +17,7 @@ describe("NoteList rendering", () => {
             id: "/vault/projects/one.md",
             title: "one",
             path: "/vault/projects/one.md",
+            tags: [],
           },
           {
             type: "folder",
@@ -29,6 +30,7 @@ describe("NoteList rendering", () => {
                 id: "/vault/projects/archive/two.md",
                 title: "two",
                 path: "/vault/projects/archive/two.md",
+                tags: [],
               },
             ],
           },
@@ -42,6 +44,8 @@ describe("NoteList rendering", () => {
         notes={notes}
         selectedNoteId={null}
         selectedFolderPath={null}
+        availableTags={["idea", "draft"]}
+        selectedTags={[]}
         onOpenVault={() => {}}
         onCreateNote={() => {}}
         onCreateFolder={() => {}}
@@ -49,10 +53,55 @@ describe("NoteList rendering", () => {
         onSelectNote={() => {}}
         onOpenInNewPane={() => {}}
         onDeleteNote={() => {}}
+        onToggleTagFilter={() => {}}
+        onClearTagFilters={() => {}}
         errorMessage={null}
       />
     );
 
     expect(html).toContain("2 notes");
+  });
+
+  it("applies match-all tag filtering in the sidebar", () => {
+    const notes: FileSystemItem[] = [
+      {
+        type: "file",
+        id: "/vault/alpha.md",
+        title: "alpha",
+        path: "/vault/alpha.md",
+        tags: ["idea", "project"],
+      },
+      {
+        type: "file",
+        id: "/vault/beta.md",
+        title: "beta",
+        path: "/vault/beta.md",
+        tags: ["idea"],
+      },
+    ];
+
+    const html = renderToStaticMarkup(
+      <NoteList
+        directoryPath="/vault"
+        notes={notes}
+        selectedNoteId={null}
+        selectedFolderPath={null}
+        availableTags={["idea", "project"]}
+        selectedTags={["idea", "project"]}
+        onOpenVault={() => {}}
+        onCreateNote={() => {}}
+        onCreateFolder={() => {}}
+        onSelectFolder={() => {}}
+        onSelectNote={() => {}}
+        onOpenInNewPane={() => {}}
+        onDeleteNote={() => {}}
+        onToggleTagFilter={() => {}}
+        onClearTagFilters={() => {}}
+        errorMessage={null}
+      />
+    );
+
+    expect(html).toContain("alpha");
+    expect(html).not.toContain("beta");
   });
 });

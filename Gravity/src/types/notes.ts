@@ -2,6 +2,20 @@ export interface Note {
   id: string;
   title: string;
   path: string;
+  subject?: string;
+  tags: string[];
+  updatedAt?: string;
+}
+
+export interface NoteMetadata {
+  subject?: string;
+  tags: string[];
+  updatedAt?: string;
+}
+
+export interface NoteDocument {
+  body: string;
+  metadata: NoteMetadata;
 }
 
 export interface NoteItem extends Note {
