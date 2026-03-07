@@ -10,7 +10,7 @@ import {
 import { buildFilenameSearchResults } from "../services/notesService";
 import { recordStartupEvent } from "../state/startupDiagnostics";
 import type { FileSystemItem, FolderItem, Note, TrashEntry } from "../types/notes";
-import { normalizeTag } from "../utils/frontmatter";
+import { normalizeNoteMetadata, normalizeTag } from "../utils/frontmatter";
 
 interface NoteListProps {
   directoryPath: string;
@@ -18,8 +18,8 @@ interface NoteListProps {
   trashEntries: TrashEntry[];
   selectedNoteId: string | null;
   selectedFolderPath: string | null;
-  availableTags: string[];
-  selectedTags: string[];
+  availableTags?: string[];
+  selectedTags?: string[];
   onOpenVault: () => void;
   onCreateNote: (title: string) => void;
   onRenameNote: (note: Note, title: string) => void;
@@ -32,8 +32,8 @@ interface NoteListProps {
   onSelectNote: (note: Note) => void;
   onOpenInNewPane: (note: Note) => void;
   onDeleteNote: (note: Note) => void;
-  onToggleTagFilter: (tag: string) => void;
-  onClearTagFilters: () => void;
+  onToggleTagFilter?: (tag: string) => void;
+  onClearTagFilters?: () => void;
   onRestoreTrashEntry: (entry: TrashEntry) => void;
   onPermanentlyDeleteTrashEntry: (entry: TrashEntry) => void;
   errorMessage: string | null;
@@ -129,7 +129,9 @@ function noteMatchesSelectedTags(note: Note, selectedTags: string[]): boolean {
     return true;
   }
 
-  const noteTags = new Set(note.tags.map((tag) => normalizeTag(tag).toLocaleLowerCase()));
+  const noteTags = new Set(
+    normalizeNoteMetadata(note).tags.map((tag) => normalizeTag(tag).toLocaleLowerCase())
+  );
   return selectedTags.every((tag) => noteTags.has(normalizeTag(tag).toLocaleLowerCase()));
 }
 
@@ -252,8 +254,8 @@ export function NoteList({
   trashEntries,
   selectedNoteId,
   selectedFolderPath,
-  availableTags,
-  selectedTags,
+  availableTags = [],
+  selectedTags = [],
   onOpenVault,
   onCreateNote,
   onRenameNote,
@@ -266,8 +268,8 @@ export function NoteList({
   onSelectNote,
   onOpenInNewPane,
   onDeleteNote,
-  onToggleTagFilter,
-  onClearTagFilters,
+  onToggleTagFilter = () => {},
+  onClearTagFilters = () => {},
   onRestoreTrashEntry,
   onPermanentlyDeleteTrashEntry,
   errorMessage,
@@ -283,11 +285,22 @@ export function NoteList({
     x: number;
     y: number;
   } | null>(null);
+  const normalizedAvailableTags = useMemo(
+    () => normalizeNoteMetadata({ tags: availableTags }).tags,
+    [availableTags]
+  );
+  const normalizedSelectedTags = useMemo(
+    () => normalizeNoteMetadata({ tags: selectedTags }).tags,
+    [selectedTags]
+  );
   const canCreate = Boolean(directoryPath && newTitle.trim());
   const canCreateFolder = Boolean(directoryPath && newFolderName.trim());
   const isContextMenuOpen = contextMenu !== null;
 
-  const filteredNotes = useMemo(() => filterNotesTree(notes, selectedTags), [notes, selectedTags]);
+  const filteredNotes = useMemo(
+    () => filterNotesTree(notes, normalizedSelectedTags),
+    [normalizedSelectedTags, notes]
+  );
 
   const { totalNotes, folderNoteCounts } = useMemo(
     () => buildNotesTreeStats(filteredNotes),
@@ -479,9 +492,10 @@ export function NoteList({
 
   const renderNoteRow = (note: Note, depth: number, folderLabel?: string) => {
     const depthStyle = { "--depth": depth } as CSSProperties;
+    const metadata = normalizeNoteMetadata(note);
     const metadataLine =
-      note.subject || note.tags.length > 0
-        ? (note.subject ?? note.tags.map((tag) => `#${tag}`).join(" "))
+      metadata.subject || metadata.tags.length > 0
+        ? (metadata.subject ?? metadata.tags.map((tag) => `#${tag}`).join(" "))
         : folderLabel;
 
     return (
@@ -715,15 +729,15 @@ export function NoteList({
               <p className="note-list__selection-label">Filter Tags</p>
               <p className="note-list__filters-copy">All selected tags must match.</p>
             </div>
-            {selectedTags.length > 0 && (
+            {normalizedSelectedTags.length > 0 && (
               <button className="note-list__link" type="button" onClick={onClearTagFilters}>
                 Clear filters
               </button>
             )}
           </div>
           <div className="note-list__filter-tags">
-            {availableTags.map((tag) => {
-              const isActive = selectedTags.some(
+            {normalizedAvailableTags.map((tag) => {
+              const isActive = normalizedSelectedTags.some(
                 (selectedTag) =>
                   normalizeTag(selectedTag).toLocaleLowerCase() ===
                   normalizeTag(tag).toLocaleLowerCase()
@@ -770,7 +784,7 @@ export function NoteList({
           <ul className="note-list__items">
             {totalNotes === 0 && (
               <li className="note-list__empty">
-                {selectedTags.length > 0
+                {normalizedSelectedTags.length > 0
                   ? "No notes match the selected tags."
                   : "No notes yet. Create the first one."}
               </li>

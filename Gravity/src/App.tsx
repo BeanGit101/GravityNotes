@@ -262,7 +262,22 @@ function App() {
   const didRecordMountRef = useRef(false);
   const didMarkReadyRef = useRef(false);
   const loadingRef = useRef<Set<string>>(new Set());
+  const noteContentsRef = useRef<Record<string, string>>({});
+  const noteMetadataByIdRef = useRef<Record<string, NoteMetadata>>({});
+  const noteViewModesRef = useRef<Record<string, NoteViewMode>>({});
   const cryptoRef = useRef((globalThis as { crypto?: Crypto }).crypto);
+
+  useEffect(() => {
+    noteContentsRef.current = noteContents;
+  }, [noteContents]);
+
+  useEffect(() => {
+    noteMetadataByIdRef.current = noteMetadataById;
+  }, [noteMetadataById]);
+
+  useEffect(() => {
+    noteViewModesRef.current = noteViewModes;
+  }, [noteViewModes]);
 
   const notesWithMetadata = useMemo(
     () => mergeMetadataIntoItems(notes, noteMetadataById),
@@ -414,9 +429,9 @@ function App() {
       const existingIds = collectNoteIds(entries);
       const removedIds = new Set<string>(
         [
-          ...Object.keys(noteContents),
-          ...Object.keys(noteMetadataById),
-          ...Object.keys(noteViewModes),
+          ...Object.keys(noteContentsRef.current),
+          ...Object.keys(noteMetadataByIdRef.current),
+          ...Object.keys(noteViewModesRef.current),
           ...Array.from(loadingRef.current),
         ].filter((key) => !existingIds.has(key))
       );
@@ -451,7 +466,7 @@ function App() {
     } finally {
       setIsLoading(false);
     }
-  }, [noteContents, noteMetadataById, noteViewModes, notesDirectory]);
+  }, [notesDirectory]);
 
   useEffect(() => {
     if (!didRecordMountRef.current) {

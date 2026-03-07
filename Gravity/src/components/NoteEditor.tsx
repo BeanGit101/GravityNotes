@@ -4,6 +4,7 @@ import {
   type ReactNode,
   useCallback,
   useEffect,
+  useId,
   useMemo,
   useRef,
   useState,
@@ -36,11 +37,12 @@ import { createEmptyNoteMetadata, normalizeNoteMetadata, normalizeTag } from "..
 import { MarkdownPreview } from "./MarkdownPreview";
 
 interface NoteEditorProps {
-  note: Note | null;
+  note: Pick<Note, "id" | "title" | "path"> | null;
+  metadata?: NoteMetadata;
   value: string;
-  availableTags: string[];
+  availableTags?: string[];
   onChange: (value: string) => void;
-  onMetadataChange: (metadata: NoteMetadata) => void;
+  onMetadataChange?: (metadata: NoteMetadata) => void;
   onAutoSave: (value: NoteDocument) => Promise<void>;
   toolbarActions?: ReactNode;
   isActive?: boolean;
@@ -67,6 +69,161 @@ function formatUpdatedAt(updatedAt?: string): string | null {
   }
 
   return parsed.toLocaleString();
+}
+
+function normalizeTagOptions(tags: string[] | undefined): string[] {
+  const normalizedTags = new Map<string, string>();
+
+  (tags ?? []).forEach((tag) => {
+    const normalized = normalizeTag(tag);
+    if (!normalized) {
+      return;
+    }
+
+    const key = normalized.toLocaleLowerCase();
+    if (!normalizedTags.has(key)) {
+      normalizedTags.set(key, normalized);
+    }
+  });
+
+  return Array.from(normalizedTags.values());
+}
+
+interface OptionalFrontmatterPanelProps {
+  metadata: NoteMetadata;
+  isMetadataEditable: boolean;
+  tagInput: string;
+  suggestedTags: string[];
+  onSubjectChange: (event: ChangeEvent<HTMLInputElement>) => void;
+  onTagInputChange: (value: string) => void;
+  onTagInputKeyDown: (event: KeyboardEvent<HTMLInputElement>) => void;
+  onTagInputBlur: () => void;
+  onRemoveTag: (tag: string) => void;
+  onCommitTag: (tag: string) => void;
+}
+
+function OptionalFrontmatterPanel({
+  metadata,
+  isMetadataEditable,
+  tagInput,
+  suggestedTags,
+  onSubjectChange,
+  onTagInputChange,
+  onTagInputKeyDown,
+  onTagInputBlur,
+  onRemoveTag,
+  onCommitTag,
+}: OptionalFrontmatterPanelProps) {
+  const frontmatterPanelId = useId();
+  const [isExpanded, setIsExpanded] = useState(false);
+  const frontmatterSummary = useMemo(() => {
+    const parts: string[] = [];
+
+    if (metadata.subject) {
+      parts.push(metadata.subject);
+    }
+    if (metadata.tags.length > 0) {
+      parts.push(metadata.tags.map((tag) => `#${tag}`).join(" "));
+    }
+
+    return parts.join(" | ");
+  }, [metadata.subject, metadata.tags]);
+
+  return (
+    <section className="note-editor__frontmatter">
+      <div className="note-editor__frontmatter-header">
+        <div className="note-editor__frontmatter-copy">
+          <p className="note-editor__frontmatter-title">Frontmatter (optional)</p>
+          <p className="note-editor__frontmatter-description">
+            Add a subject or tags only if they help organize this note.
+          </p>
+          {!isExpanded && frontmatterSummary && (
+            <p className="note-editor__frontmatter-summary">{frontmatterSummary}</p>
+          )}
+        </div>
+        <button
+          className="button button--secondary note-editor__frontmatter-toggle"
+          type="button"
+          onClick={() => {
+            setIsExpanded((current) => !current);
+          }}
+          aria-expanded={isExpanded}
+          aria-controls={frontmatterPanelId}
+        >
+          {isExpanded ? "Hide details" : frontmatterSummary ? "Edit details" : "Add details"}
+        </button>
+      </div>
+
+      {isExpanded && (
+        <div className="note-editor__properties" id={frontmatterPanelId}>
+          <label className="note-editor__field">
+            <span className="note-editor__field-label">Subject</span>
+            <input
+              className="input note-editor__input"
+              type="text"
+              value={metadata.subject ?? ""}
+              onChange={onSubjectChange}
+              placeholder="Optional subject"
+              disabled={!isMetadataEditable}
+            />
+          </label>
+
+          <div className="note-editor__field">
+            <span className="note-editor__field-label">Tags</span>
+            <div className="note-editor__tag-editor">
+              <div className="note-editor__tag-list">
+                {metadata.tags.map((tag) => (
+                  <span key={tag} className="note-editor__tag-chip">
+                    <span>#{tag}</span>
+                    <button
+                      className="note-editor__tag-remove"
+                      type="button"
+                      onClick={() => {
+                        onRemoveTag(tag);
+                      }}
+                      disabled={!isMetadataEditable}
+                      aria-label={`Remove ${tag}`}
+                    >
+                      x
+                    </button>
+                  </span>
+                ))}
+                <input
+                  className="note-editor__tag-input"
+                  type="text"
+                  value={tagInput}
+                  onChange={(event) => {
+                    onTagInputChange(event.target.value);
+                  }}
+                  onKeyDown={onTagInputKeyDown}
+                  onBlur={onTagInputBlur}
+                  placeholder="Add an optional tag"
+                  disabled={!isMetadataEditable}
+                />
+              </div>
+            </div>
+            {suggestedTags.length > 0 && (
+              <div className="note-editor__tag-options">
+                {suggestedTags.map((tag) => (
+                  <button
+                    key={tag}
+                    className="note-editor__tag-option"
+                    type="button"
+                    onClick={() => {
+                      onCommitTag(tag);
+                    }}
+                    disabled={!isMetadataEditable}
+                  >
+                    #{tag}
+                  </button>
+                ))}
+              </div>
+            )}
+          </div>
+        </div>
+      )}
+    </section>
+  );
 }
 
 interface SearchMatch {
@@ -99,10 +256,11 @@ function findMatches(value: string, query: string, matchCase: boolean): SearchMa
 
 export function NoteEditor({
   note,
+  metadata,
   value,
-  availableTags,
+  availableTags = [],
   onChange,
-  onMetadataChange,
+  onMetadataChange = () => {},
   onAutoSave,
   toolbarActions,
   isActive = false,
@@ -115,6 +273,10 @@ export function NoteEditor({
   const valueRef = useRef(value);
   const metadataRef = useRef<NoteMetadata>(createEmptyNoteMetadata());
   const lastSavedRef = useRef(createDocumentSnapshot(value, createEmptyNoteMetadata()));
+  const lastLoadedStateRef = useRef<{ noteKey: string | null; isLoading: boolean }>({
+    noteKey: null,
+    isLoading: true,
+  });
   const onChangeRef = useRef(onChange);
   const onMetadataChangeRef = useRef(onMetadataChange);
   const onAutoSaveRef = useRef(onAutoSave);
@@ -138,16 +300,11 @@ export function NoteEditor({
   const [matchCase, setMatchCase] = useState(false);
   const [activeMatchIndex, setActiveMatchIndex] = useState(0);
 
-  const noteMetadata = useMemo(
-    () =>
-      note
-        ? normalizeNoteMetadata({
-            subject: note.subject,
-            tags: note.tags,
-            updatedAt: note.updatedAt,
-          })
-        : createEmptyNoteMetadata(),
-    [note]
+  const noteMetadata = note ? normalizeNoteMetadata(metadata) : createEmptyNoteMetadata();
+  const noteKey = note?.path ?? note?.id ?? null;
+  const normalizedAvailableTags = useMemo(
+    () => normalizeTagOptions(availableTags),
+    [availableTags]
   );
 
   const documentSnapshot = useMemo(
@@ -161,11 +318,13 @@ export function NoteEditor({
   const canTogglePreviewTasks = Boolean(note) && !isLoading;
   const isEditable = canToggleCheckboxes;
   const isMetadataEditable = Boolean(note) && !isLoading;
-  const updatedAtLabel = note ? formatUpdatedAt(note.updatedAt) : null;
+  const updatedAtLabel = note ? formatUpdatedAt(noteMetadata.updatedAt) : null;
   const suggestedTags = useMemo(() => {
     const assigned = new Set(noteMetadata.tags.map((tag) => normalizeTag(tag).toLocaleLowerCase()));
-    return availableTags.filter((tag) => !assigned.has(normalizeTag(tag).toLocaleLowerCase()));
-  }, [availableTags, noteMetadata.tags]);
+    return normalizedAvailableTags.filter(
+      (tag) => !assigned.has(normalizeTag(tag).toLocaleLowerCase())
+    );
+  }, [normalizedAvailableTags, noteMetadata.tags]);
   const matches = useMemo(
     () => findMatches(value, findQuery, matchCase),
     [findQuery, matchCase, value]
@@ -492,10 +651,16 @@ export function NoteEditor({
   }, [value]);
 
   useEffect(() => {
-    if (note?.path) {
+    const previous = lastLoadedStateRef.current;
+    const didNoteChange = previous.noteKey !== noteKey;
+    const didFinishLoading = previous.isLoading && !isLoading;
+
+    if ((didNoteChange || didFinishLoading) && noteKey && !isLoading) {
       lastSavedRef.current = documentSnapshot;
     }
-  }, [documentSnapshot, note?.path]);
+
+    lastLoadedStateRef.current = { noteKey, isLoading };
+  }, [documentSnapshot, isLoading, noteKey]);
 
   useEffect(() => {
     const nextKey = note?.path ?? note?.id ?? null;
@@ -547,7 +712,7 @@ export function NoteEditor({
   ]);
 
   useEffect(() => {
-    if (!note || isLoading) return;
+    if (!noteKey || isLoading) return;
     if (documentSnapshot === lastSavedRef.current) return;
 
     const pendingDocument: NoteDocument = {
@@ -572,7 +737,7 @@ export function NoteEditor({
     return () => {
       window.clearTimeout(handle);
     };
-  }, [documentSnapshot, isLoading, note, noteMetadata, value]);
+  }, [documentSnapshot, isLoading, noteKey, noteMetadata, value]);
 
   const emitMetadataChange = (nextMetadata: NoteMetadata) => {
     metadataRef.current = nextMetadata;
@@ -682,7 +847,7 @@ export function NoteEditor({
           <p className="note-editor__meta">
             {updatedAtLabel
               ? `Updated ${updatedAtLabel}`
-              : "Frontmatter is added only when metadata is set."}
+              : "Subject and tags stay out of the note unless you choose to add them."}
           </p>
         </div>
         <div className="note-editor__actions">
@@ -711,82 +876,31 @@ export function NoteEditor({
           {toolbarActions}
         </div>
       </div>
-      {note && (
-        <div className="note-editor__properties">
-          <label className="note-editor__field">
-            <span className="note-editor__field-label">Subject</span>
-            <input
-              className="input note-editor__input"
-              type="text"
-              value={noteMetadata.subject ?? ""}
-              onChange={handleSubjectChange}
-              placeholder="Add a subject for this note"
-              disabled={!isMetadataEditable}
-            />
-          </label>
-
-          <div className="note-editor__field">
-            <span className="note-editor__field-label">Tags</span>
-            <div className="note-editor__tag-editor">
-              <div className="note-editor__tag-list">
-                {noteMetadata.tags.map((tag) => (
-                  <span key={tag} className="note-editor__tag-chip">
-                    <span>#{tag}</span>
-                    <button
-                      className="note-editor__tag-remove"
-                      type="button"
-                      onClick={() => {
-                        emitMetadataChange({
-                          ...metadataRef.current,
-                          tags: metadataRef.current.tags.filter((entry) => entry !== tag),
-                        });
-                      }}
-                      disabled={!isMetadataEditable}
-                      aria-label={`Remove ${tag}`}
-                    >
-                      x
-                    </button>
-                  </span>
-                ))}
-                <input
-                  className="note-editor__tag-input"
-                  type="text"
-                  value={tagInput}
-                  onChange={(event) => {
-                    setTagDraft({ noteId: activeNoteId, value: event.target.value });
-                  }}
-                  onKeyDown={handleTagInputKeyDown}
-                  onBlur={() => {
-                    if (tagInput.trim()) {
-                      commitTag(tagInput);
-                    }
-                  }}
-                  placeholder={
-                    noteMetadata.tags.length === 0 ? "Add a tag and press Enter" : "Add tag"
-                  }
-                  disabled={!isMetadataEditable}
-                />
-              </div>
-            </div>
-            {suggestedTags.length > 0 && (
-              <div className="note-editor__tag-options">
-                {suggestedTags.map((tag) => (
-                  <button
-                    key={tag}
-                    className="note-editor__tag-option"
-                    type="button"
-                    onClick={() => {
-                      commitTag(tag);
-                    }}
-                    disabled={!isMetadataEditable}
-                  >
-                    #{tag}
-                  </button>
-                ))}
-              </div>
-            )}
-          </div>
-        </div>
+      {noteKey && (
+        <OptionalFrontmatterPanel
+          key={noteKey}
+          metadata={noteMetadata}
+          isMetadataEditable={isMetadataEditable}
+          tagInput={tagInput}
+          suggestedTags={suggestedTags}
+          onSubjectChange={handleSubjectChange}
+          onTagInputChange={(nextValue) => {
+            setTagDraft({ noteId: activeNoteId, value: nextValue });
+          }}
+          onTagInputKeyDown={handleTagInputKeyDown}
+          onTagInputBlur={() => {
+            if (tagInput.trim()) {
+              commitTag(tagInput);
+            }
+          }}
+          onRemoveTag={(tag) => {
+            emitMetadataChange({
+              ...metadataRef.current,
+              tags: metadataRef.current.tags.filter((entry) => entry !== tag),
+            });
+          }}
+          onCommitTag={commitTag}
+        />
       )}
 
       {isFindOpen && !isPreviewMode && (

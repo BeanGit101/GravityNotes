@@ -7,7 +7,7 @@ import { act, useState } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { NoteEditor } from "../src/components/NoteEditor";
-import type { Note } from "../src/types/notes";
+import type { Note, NoteDocument } from "../src/types/notes";
 
 const note: Note = {
   id: "/vault/one.md",
@@ -24,7 +24,7 @@ class ResizeObserverMock {
 interface CheckboxHarnessProps {
   initialValue: string;
   viewMode: "edit" | "preview";
-  onAutoSave: (value: string) => Promise<void>;
+  onAutoSave: (value: NoteDocument) => Promise<void>;
 }
 
 function CheckboxHarness({ initialValue, viewMode, onAutoSave }: CheckboxHarnessProps) {
@@ -120,7 +120,10 @@ describe("NoteEditor checkbox interactions", () => {
     });
 
     expect(valueOutput?.textContent).toBe("Status: - [x] Working?");
-    expect(onAutoSave).toHaveBeenCalledWith("Status: - [x] Working?");
+    expect(onAutoSave).toHaveBeenCalledWith({
+      body: "Status: - [x] Working?",
+      metadata: { tags: [] },
+    });
   });
 
   it("toggles inline checkboxes from the editor widget in edit mode", async () => {
@@ -152,3 +155,4 @@ describe("NoteEditor checkbox interactions", () => {
     expect(valueOutput?.textContent).toBe("Status: - [x] Working?");
   });
 });
+
