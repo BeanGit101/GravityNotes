@@ -63,6 +63,22 @@ function buildNotesTreeStats(items: FileSystemItem[]): NotesTreeStats {
   };
 }
 
+function collectFolderPaths(items: FileSystemItem[]): Set<string> {
+  const folderPaths = new Set<string>();
+
+  const visit = (entries: FileSystemItem[]) => {
+    entries.forEach((entry) => {
+      if (entry.type === "folder") {
+        folderPaths.add(entry.path);
+        visit(entry.children);
+      }
+    });
+  };
+
+  visit(items);
+  return folderPaths;
+}
+
 function findFolderByPath(items: FileSystemItem[], path: string): FolderItem | null {
   for (const item of items) {
     if (item.type === "folder") {
@@ -78,7 +94,15 @@ function findFolderByPath(items: FileSystemItem[], path: string): FolderItem | n
   return null;
 }
 
-function findFolderChainForNote(items: FileSystemItem[], noteId: string): string[] | null {
+function setsEqual(left: Set<string>, right: Set<string>): boolean {
+  if (left.size !== right.size) {
+    return false;
+  }
+
+  return Array.from(left).every((value) => right.has(value));
+}
+
+export function findFolderChainForNote(items: FileSystemItem[], noteId: string): string[] | null {
   for (const item of items) {
     if (item.type === "file" && item.id === noteId) {
       return [];
@@ -130,6 +154,46 @@ function isPathWithin(path: string | null, ancestorPath: string): boolean {
     path.startsWith(`${ancestorPath}\\`) ||
     path.startsWith(`${ancestorPath}/`)
   );
+export function expandFoldersForNoteSelection(
+  items: FileSystemItem[],
+  expandedFolders: Set<string>,
+  noteId: string | null
+): Set<string> {
+  if (!noteId) {
+    return new Set(expandedFolders);
+  }
+
+  const chain = findFolderChainForNote(items, noteId);
+  if (!chain) {
+    return new Set(expandedFolders);
+  }
+
+  const next = new Set(expandedFolders);
+  chain.forEach((path) => {
+    next.add(path);
+  });
+  return next;
+}
+
+export function toggleExpandedFolder(
+  expandedFolders: Set<string>,
+  folderPath: string
+): Set<string> {
+  const next = new Set(expandedFolders);
+  if (next.has(folderPath)) {
+    next.delete(folderPath);
+  } else {
+    next.add(folderPath);
+  }
+  return next;
+}
+
+export function pruneExpandedFolders(
+  expandedFolders: Set<string>,
+  items: FileSystemItem[]
+): Set<string> {
+  const validPaths = collectFolderPaths(items);
+  return new Set(Array.from(expandedFolders).filter((path) => validPaths.has(path)));
 }
 
 export function NoteList({
@@ -164,6 +228,7 @@ export function NoteList({
     x: number;
     y: number;
   } | null>(null);
+  const lastAutoExpandedNoteIdRef = useRef<string | null>(null);
   const canCreate = Boolean(directoryPath && newTitle.trim());
   const canCreateFolder = Boolean(directoryPath && newFolderName.trim());
 
@@ -176,6 +241,18 @@ export function NoteList({
     () => buildFilenameSearchResults(notes, searchQuery, directoryPath),
     [directoryPath, notes, searchQuery]
   );
+  const effectiveExpandedFolders = useMemo(
+    () => pruneExpandedFolders(expandedFolders, notes),
+    [expandedFolders, notes]
+  );
+
+  const selectedFolderLabel = useMemo(() => {
+    if (!selectedFolderPath) {
+      return "Vault root";
+    }
+    const match = findFolderByPath(notes, selectedFolderPath);
+    return match?.name ?? "Selected folder";
+  }, [notes, selectedFolderPath]);
 
   const handleCreate = (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
@@ -191,21 +268,32 @@ export function NoteList({
     setNewFolderName("");
   };
 
-  const selectedFolderLabel = useMemo(() => {
-    if (!selectedFolderPath) {
-      return "Vault root";
+  useEffect(() => {
+    const prunedFolders = pruneExpandedFolders(expandedFolders, notes);
+    if (setsEqual(prunedFolders, expandedFolders)) {
+      return;
     }
     const match = findFolderByPath(notes, selectedFolderPath);
     return match ? toRelativePath(directoryPath, match.path) : "Selected folder";
   }, [directoryPath, notes, selectedFolderPath]);
 
-  const autoExpandedFolders = useMemo(() => {
+    let cancelled = false;
+    queueMicrotask(() => {
+      if (!cancelled) {
+        setExpandedFolders(prunedFolders);
+      }
+    });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [expandedFolders, notes]);
+
+  useEffect(() => {
     if (!selectedNoteId) {
-      return new Set<string>();
+      lastAutoExpandedNoteIdRef.current = null;
+      return;
     }
-    const chain = findFolderChainForNote(notes, selectedNoteId);
-    return new Set(chain ?? []);
-  }, [notes, selectedNoteId]);
 
   const mergedExpandedFolders = useMemo(() => {
     const available = new Set(
@@ -387,7 +475,7 @@ export function NoteList({
       const depthStyle = { "--depth": depth } as CSSProperties;
 
       if (item.type === "folder") {
-        const isExpanded = mergedExpandedFolders.has(item.path);
+        const isExpanded = effectiveExpandedFolders.has(item.path);
         const isSelected = selectedFolderPath === item.path;
         const noteCount = folderNoteCounts.get(item.path) ?? 0;
         const hasChildren = item.children.length > 0;
@@ -413,15 +501,7 @@ export function NoteList({
                 type="button"
                 onClick={() => {
                   if (!hasChildren) return;
-                  setExpandedFolders((prev) => {
-                    const next = new Set(prev);
-                    if (next.has(item.path)) {
-                      next.delete(item.path);
-                    } else {
-                      next.add(item.path);
-                    }
-                    return next;
-                  });
+                  setExpandedFolders(toggleExpandedFolder(effectiveExpandedFolders, item.path));
                 }}
                 aria-label={`${isExpanded ? "Collapse" : "Expand"} ${item.name}`}
                 disabled={!hasChildren}
@@ -433,7 +513,9 @@ export function NoteList({
                 type="button"
                 onClick={() => {
                   onSelectFolder(item.path);
-                  setExpandedFolders((prev) => new Set(prev).add(item.path));
+                  const next = new Set(effectiveExpandedFolders);
+                  next.add(item.path);
+                  setExpandedFolders(next);
                 }}
               >
                 <span className="note-list__label">{item.name}</span>
@@ -466,7 +548,69 @@ export function NoteList({
         );
       }
 
-      return renderNoteRow(item, depth);
+      return (
+        <li key={item.id} className="note-list__item">
+          <div
+            className={`note-list__row note-list__row--file ${
+              selectedNoteId === item.id ? "note-list__row--active" : ""
+            }`}
+            style={depthStyle}
+            onContextMenu={(event) => {
+              event.preventDefault();
+              setContextMenu({
+                note: item,
+                x: event.clientX,
+                y: event.clientY,
+              });
+            }}
+          >
+            <button
+              className="note-list__select"
+              type="button"
+              onClick={() => {
+                const nextExpandedFolders = expandFoldersForNoteSelection(
+                  notes,
+                  effectiveExpandedFolders,
+                  item.id
+                );
+                setExpandedFolders(nextExpandedFolders);
+                lastAutoExpandedNoteIdRef.current = item.id;
+                onSelectNote(item);
+              }}
+            >
+              {item.title}
+            </button>
+            <button
+              className="note-list__split"
+              type="button"
+              onClick={(event) => {
+                event.stopPropagation();
+                const nextExpandedFolders = expandFoldersForNoteSelection(
+                  notes,
+                  effectiveExpandedFolders,
+                  item.id
+                );
+                setExpandedFolders(nextExpandedFolders);
+                lastAutoExpandedNoteIdRef.current = item.id;
+                onOpenInNewPane(item);
+              }}
+              aria-label={`Open ${item.title} in a new pane`}
+            >
+              Split
+            </button>
+            <button
+              className="note-list__delete"
+              type="button"
+              onClick={() => {
+                onDeleteNote(item);
+              }}
+              aria-label={`Delete ${item.title}`}
+            >
+              Delete
+            </button>
+          </div>
+        </li>
+      );
     });
 
   return (
