@@ -550,7 +550,8 @@ export function NoteList({
       }
       
   return renderNoteRow(item as Note, depth);
-      
+    });
+   
   return (
     <div className="note-list">
       <div className="note-list__header">
