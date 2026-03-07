@@ -15,16 +15,24 @@ import { PaneContainer } from "./components/PaneContainer";
 import {
   createFolder,
   createNote,
+  deleteFolder,
   deleteNote,
   getNotesDirectory,
   listNotesWithFolders,
+  listTrashEntries,
+  moveFolder,
+  moveNote,
+  permanentlyDeleteTrashEntry,
   readNote,
+  renameFolder,
+  renameNote,
+  restoreTrashEntry,
   selectNotesDirectory,
   updateNote,
 } from "./services/notesService";
 import { initialPaneSessionState, paneSessionReducer, type OpenMode } from "./state/paneReducer";
 import type { NoteViewMode } from "./types/editor";
-import type { FileSystemItem, Note } from "./types/notes";
+import type { FileSystemItem, Note, TrashEntry } from "./types/notes";
 
 function folderExists(items: FileSystemItem[], path: string): boolean {
   for (const item of items) {
@@ -57,6 +65,100 @@ function collectNoteIds(items: FileSystemItem[]): Set<string> {
   return ids;
 }
 
+function collectNoteIdsInFolder(items: FileSystemItem[], folderPath: string): string[] {
+  const result: string[] = [];
+
+  const visit = (entries: FileSystemItem[]) => {
+    entries.forEach((entry) => {
+      if (entry.type === "file") {
+        result.push(entry.id);
+        return;
+      }
+      visit(entry.children);
+    });
+  };
+
+  const findFolder = (entries: FileSystemItem[]): boolean => {
+    for (const entry of entries) {
+      if (entry.type !== "folder") {
+        continue;
+      }
+      if (entry.path === folderPath) {
+        visit(entry.children);
+        return true;
+      }
+      if (findFolder(entry.children)) {
+        return true;
+      }
+    }
+    return false;
+  };
+
+  findFolder(items);
+  return result;
+}
+
+function replacePathPrefix(path: string, fromPrefix: string, toPrefix: string): string {
+  if (path === fromPrefix) {
+    return toPrefix;
+  }
+  if (!path.startsWith(`${fromPrefix}\\`) && !path.startsWith(`${fromPrefix}/`)) {
+    return path;
+  }
+  return `${toPrefix}${path.slice(fromPrefix.length)}`;
+}
+
+function buildFolderNoteIdMapping(
+  items: FileSystemItem[],
+  oldFolderPath: string,
+  newFolderPath: string
+): Record<string, string> {
+  return Object.fromEntries(
+    collectNoteIdsInFolder(items, oldFolderPath).map((noteId) => [
+      noteId,
+      replacePathPrefix(noteId, oldFolderPath, newFolderPath),
+    ])
+  );
+}
+
+function remapRecordValues<T>(
+  current: Record<string, T>,
+  mapping: Record<string, string>
+): Record<string, T> {
+  if (Object.keys(mapping).length === 0) {
+    return current;
+  }
+
+  return Object.fromEntries(
+    Object.entries(current).map(([key, value]) => [mapping[key] ?? key, value])
+  ) as Record<string, T>;
+}
+
+function removeRecordKeys<T>(current: Record<string, T>, noteIds: Set<string>): Record<string, T> {
+  return Object.fromEntries(Object.entries(current).filter(([key]) => !noteIds.has(key))) as Record<
+    string,
+    T
+  >;
+}
+
+function remapSetValues(current: Set<string>, mapping: Record<string, string>): Set<string> {
+  const next = new Set<string>();
+  current.forEach((value) => {
+    next.add(mapping[value] ?? value);
+  });
+  return next;
+}
+
+function removeSetValues(current: Set<string>, noteIds: Set<string>): Set<string> {
+  const next = new Set<string>();
+  current.forEach((value) => {
+    if (!noteIds.has(value)) {
+      next.add(value);
+    }
+  });
+  return next;
+}
+
 function App() {
   const SIDEBAR_WIDTH_KEY = "gravity.sidebarWidth";
   const SIDEBAR_MIN_WIDTH = 200;
@@ -65,6 +167,7 @@ function App() {
 
   const [notesDirectory, setNotesDirectory] = useState(getNotesDirectory());
   const [notes, setNotes] = useState<FileSystemItem[]>([]);
+  const [trashEntries, setTrashEntries] = useState<TrashEntry[]>([]);
   const [paneSession, dispatchPane] = useReducer(paneSessionReducer, initialPaneSessionState);
   const [noteContents, setNoteContents] = useState<Record<string, string>>({});
   const [noteViewModes, setNoteViewModes] = useState<Record<string, NoteViewMode>>({});
@@ -120,9 +223,33 @@ function App() {
     });
   }, []);
 
-  const loadNotes = useCallback(async () => {
+  const remapNoteState = useCallback((mapping: Record<string, string>) => {
+    if (Object.keys(mapping).length === 0) {
+      return;
+    }
+
+    dispatchPane({ type: "remap-note-ids", noteIds: mapping });
+    setNoteContents((current) => remapRecordValues(current, mapping));
+    setNoteViewModes((current) => remapRecordValues(current, mapping));
+    setLoadingNoteIds((current) => remapSetValues(current, mapping));
+  }, []);
+
+  const removeNotesFromState = useCallback((noteIds: string[]) => {
+    if (noteIds.length === 0) {
+      return;
+    }
+
+    const removed = new Set(noteIds);
+    dispatchPane({ type: "remove-notes", noteIds });
+    setNoteContents((current) => removeRecordKeys(current, removed));
+    setNoteViewModes((current) => removeRecordKeys(current, removed));
+    setLoadingNoteIds((current) => removeSetValues(current, removed));
+  }, []);
+
+  const refreshVaultState = useCallback(async () => {
     if (!notesDirectory) {
       setNotes([]);
+      setTrashEntries([]);
       dispatchPane({ type: "reset" });
       setNoteContents({});
       setNoteViewModes({});
@@ -134,20 +261,33 @@ function App() {
     setErrorMessage(null);
 
     try {
-      const entries = await listNotesWithFolders();
+      const [entries, trash] = await Promise.all([listNotesWithFolders(), listTrashEntries()]);
       setNotes(entries);
+      setTrashEntries(trash);
       setSelectedFolderPath((current) => {
         if (!current) return current;
         return folderExists(entries, current) ? current : null;
       });
 
       const existingIds = collectNoteIds(entries);
-      setNoteViewModes((current) => {
-        const next = Object.fromEntries(
-          Object.entries(current).filter(([noteId]) => existingIds.has(noteId))
-        ) as Record<string, NoteViewMode>;
-        return next;
-      });
+      setNoteContents((current) =>
+        removeRecordKeys(
+          current,
+          new Set(Object.keys(current).filter((key) => !existingIds.has(key)))
+        )
+      );
+      setNoteViewModes((current) =>
+        removeRecordKeys(
+          current,
+          new Set(Object.keys(current).filter((key) => !existingIds.has(key)))
+        )
+      );
+      setLoadingNoteIds((current) =>
+        removeSetValues(
+          current,
+          new Set(Array.from(current).filter((key) => !existingIds.has(key)))
+        )
+      );
     } catch (error) {
       console.error(error);
       setErrorMessage("Unable to load notes. Check folder permissions.");
@@ -157,8 +297,8 @@ function App() {
   }, [notesDirectory]);
 
   useEffect(() => {
-    void loadNotes();
-  }, [loadNotes]);
+    void refreshVaultState();
+  }, [refreshVaultState]);
 
   useEffect(() => {
     const handleResize = () => {
@@ -250,7 +390,7 @@ function App() {
     setErrorMessage(null);
     try {
       const created = await createNote(title, selectedFolderPath);
-      await loadNotes();
+      await refreshVaultState();
       setNoteContents((current) => ({ ...current, [created.id]: "" }));
       await openNoteInPane(created, "active");
     } catch (error) {
@@ -259,29 +399,39 @@ function App() {
     }
   };
 
+  const handleRenameNote = async (note: Note, title: string) => {
+    setErrorMessage(null);
+    try {
+      const updated = await renameNote(note.path, title);
+      remapNoteState({ [note.id]: updated.id });
+      await refreshVaultState();
+    } catch (error) {
+      console.error(error);
+      setErrorMessage("Unable to rename the note.");
+    }
+  };
+
+  const handleMoveNote = async (note: Note, folderPath: string | null) => {
+    setErrorMessage(null);
+    try {
+      const updated = await moveNote(note.path, folderPath);
+      remapNoteState({ [note.id]: updated.id });
+      await refreshVaultState();
+    } catch (error) {
+      console.error(error);
+      setErrorMessage("Unable to move the note.");
+    }
+  };
+
   const handleDeleteNote = async (note: Note) => {
     setErrorMessage(null);
     try {
       await deleteNote(note.path);
-      await loadNotes();
-      dispatchPane({ type: "remove-note", noteId: note.id });
-      setNoteContents((current) => {
-        return Object.fromEntries(Object.entries(current).filter(([key]) => key !== note.id));
-      });
-      setNoteViewModes((current) => {
-        const next = Object.fromEntries(
-          Object.entries(current).filter(([key]) => key !== note.id)
-        ) as Record<string, NoteViewMode>;
-        return next;
-      });
-      setLoadingNoteIds((current) => {
-        const next = new Set(current);
-        next.delete(note.id);
-        return next;
-      });
+      removeNotesFromState([note.id]);
+      await refreshVaultState();
     } catch (error) {
       console.error(error);
-      setErrorMessage("Unable to delete the note.");
+      setErrorMessage("Unable to move the note to trash.");
     }
   };
 
@@ -289,11 +439,82 @@ function App() {
     setErrorMessage(null);
     try {
       const created = await createFolder(name, selectedFolderPath);
-      await loadNotes();
+      await refreshVaultState();
       setSelectedFolderPath(created.path);
     } catch (error) {
       console.error(error);
       setErrorMessage("Unable to create the folder.");
+    }
+  };
+
+  const handleRenameFolder = async (folderPath: string, name: string) => {
+    setErrorMessage(null);
+    try {
+      const updated = await renameFolder(folderPath, name);
+      remapNoteState(buildFolderNoteIdMapping(notes, folderPath, updated.path));
+      setSelectedFolderPath((current) =>
+        current ? replacePathPrefix(current, folderPath, updated.path) : current
+      );
+      await refreshVaultState();
+    } catch (error) {
+      console.error(error);
+      setErrorMessage("Unable to rename the folder.");
+    }
+  };
+
+  const handleMoveFolder = async (folderPath: string, nextFolderPath: string | null) => {
+    setErrorMessage(null);
+    try {
+      const updated = await moveFolder(folderPath, nextFolderPath);
+      remapNoteState(buildFolderNoteIdMapping(notes, folderPath, updated.path));
+      setSelectedFolderPath((current) =>
+        current ? replacePathPrefix(current, folderPath, updated.path) : current
+      );
+      await refreshVaultState();
+    } catch (error) {
+      console.error(error);
+      setErrorMessage("Unable to move the folder.");
+    }
+  };
+
+  const handleDeleteFolder = async (folderPath: string) => {
+    setErrorMessage(null);
+    try {
+      const noteIds = collectNoteIdsInFolder(notes, folderPath);
+      await deleteFolder(folderPath);
+      removeNotesFromState(noteIds);
+      setSelectedFolderPath((current) => {
+        if (!current) {
+          return current;
+        }
+        return replacePathPrefix(current, folderPath, "") === current ? current : null;
+      });
+      await refreshVaultState();
+    } catch (error) {
+      console.error(error);
+      setErrorMessage("Unable to move the folder to trash.");
+    }
+  };
+
+  const handleRestoreTrashEntry = async (entry: TrashEntry) => {
+    setErrorMessage(null);
+    try {
+      await restoreTrashEntry(entry.id);
+      await refreshVaultState();
+    } catch (error) {
+      console.error(error);
+      setErrorMessage("Unable to restore the item from trash.");
+    }
+  };
+
+  const handlePermanentDeleteTrashEntry = async (entry: TrashEntry) => {
+    setErrorMessage(null);
+    try {
+      await permanentlyDeleteTrashEntry(entry.id);
+      await refreshVaultState();
+    } catch (error) {
+      console.error(error);
+      setErrorMessage("Unable to permanently delete the trash item.");
     }
   };
 
@@ -360,6 +581,7 @@ function App() {
         <NoteList
           directoryPath={notesDirectory}
           notes={notes}
+          trashEntries={trashEntries}
           selectedNoteId={activeNoteId}
           selectedFolderPath={selectedFolderPath}
           onOpenVault={() => {
@@ -368,8 +590,23 @@ function App() {
           onCreateNote={(title) => {
             void handleCreateNote(title);
           }}
+          onRenameNote={(note, title) => {
+            void handleRenameNote(note, title);
+          }}
+          onMoveNote={(note, folderPath) => {
+            void handleMoveNote(note, folderPath);
+          }}
           onCreateFolder={(name) => {
             void handleCreateFolder(name);
+          }}
+          onRenameFolder={(folderPath, name) => {
+            void handleRenameFolder(folderPath, name);
+          }}
+          onMoveFolder={(folderPath, nextFolderPath) => {
+            void handleMoveFolder(folderPath, nextFolderPath);
+          }}
+          onDeleteFolder={(folderPath) => {
+            void handleDeleteFolder(folderPath);
           }}
           onSelectFolder={(folderPath) => {
             setSelectedFolderPath(folderPath);
@@ -382,6 +619,12 @@ function App() {
           }}
           onDeleteNote={(note) => {
             void handleDeleteNote(note);
+          }}
+          onRestoreTrashEntry={(entry) => {
+            void handleRestoreTrashEntry(entry);
+          }}
+          onPermanentlyDeleteTrashEntry={(entry) => {
+            void handlePermanentDeleteTrashEntry(entry);
           }}
           errorMessage={errorMessage}
         />

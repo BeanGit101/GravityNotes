@@ -695,3 +695,127 @@ body {
     padding: 2rem 1.5rem;
   }
 }
+
+.note-list__row--file .note-list__select {
+  display: flex;
+  flex-direction: column;
+  gap: 0.1rem;
+}
+
+.note-list__title-line {
+  font-weight: 600;
+}
+
+.note-list__subtle {
+  font-size: 0.72rem;
+  color: var(--muted);
+}
+
+.note-list__more {
+  border: none;
+  background: none;
+  color: var(--muted);
+  font-size: 0.85rem;
+  cursor: pointer;
+}
+
+.note-list__results {
+  display: flex;
+  flex-direction: column;
+  gap: 0.65rem;
+}
+
+.note-list__section-label {
+  margin: 0;
+  text-transform: uppercase;
+  letter-spacing: 0.18em;
+  font-size: 0.6rem;
+  color: var(--muted);
+}
+
+.note-list__trash {
+  margin-top: auto;
+  border-top: 1px solid var(--border);
+  padding-top: 0.9rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+}
+
+.note-list__trash-toggle {
+  border: none;
+  background: none;
+  padding: 0;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  font: inherit;
+  font-weight: 600;
+  cursor: pointer;
+  color: var(--ink);
+}
+
+.note-list__trash-items {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.65rem;
+}
+
+.note-list__trash-item {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 0.75rem;
+  padding: 0.75rem;
+  border-radius: 12px;
+  background: rgba(18, 19, 26, 0.04);
+}
+
+.note-list__trash-name {
+  margin: 0;
+  font-weight: 600;
+}
+
+.note-list__trash-actions {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+}
+
+.note-editor__findbar {
+  border-bottom: 1px solid var(--border);
+  background: rgba(248, 211, 91, 0.1);
+  padding: 0.9rem 1.25rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+}
+
+.note-editor__find-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.6rem;
+}
+
+.note-editor__find-input {
+  min-width: 12rem;
+  flex: 1 1 14rem;
+}
+
+.note-editor__find-status {
+  font-size: 0.78rem;
+  color: var(--muted);
+  min-width: 4.5rem;
+}
+
+.note-editor__toggle-option {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+  font-size: 0.8rem;
+  color: var(--muted);
+}
