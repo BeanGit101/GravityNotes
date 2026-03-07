@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState, useRef, type CSSProperties, type FormEvent } from "react";
+import { useEffect, useMemo, useState, type CSSProperties, type FormEvent } from "react";
 import { buildFilenameSearchResults } from "../services/notesService";
 import type { FileSystemItem, FolderItem, Note, TrashEntry } from "../types/notes";
 
