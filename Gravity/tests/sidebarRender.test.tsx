@@ -1,7 +1,7 @@
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
 import { NoteList } from "../src/components/NoteList";
-import type { FileSystemItem } from "../src/types/notes";
+import type { FileSystemItem, TrashEntry } from "../src/types/notes";
 
 describe("NoteList rendering", () => {
   it("shows correct nested folder note count", () => {
@@ -38,28 +38,39 @@ describe("NoteList rendering", () => {
       },
     ];
 
+    const trashEntries: TrashEntry[] = [];
+
     const html = renderToStaticMarkup(
       <NoteList
         directoryPath="/vault"
         notes={notes}
+        trashEntries={trashEntries}
         selectedNoteId={null}
         selectedFolderPath={null}
         availableTags={["idea", "draft"]}
         selectedTags={[]}
         onOpenVault={() => {}}
         onCreateNote={() => {}}
+        onRenameNote={() => {}}
+        onMoveNote={() => {}}
         onCreateFolder={() => {}}
+        onRenameFolder={() => {}}
+        onMoveFolder={() => {}}
+        onDeleteFolder={() => {}}
         onSelectFolder={() => {}}
         onSelectNote={() => {}}
         onOpenInNewPane={() => {}}
         onDeleteNote={() => {}}
         onToggleTagFilter={() => {}}
         onClearTagFilters={() => {}}
+        onRestoreTrashEntry={() => {}}
+        onPermanentlyDeleteTrashEntry={() => {}}
         errorMessage={null}
       />
     );
 
     expect(html).toContain("2 notes");
+    expect(html).toContain("Trash");
   });
 
   it("applies match-all tag filtering in the sidebar", () => {
@@ -80,23 +91,33 @@ describe("NoteList rendering", () => {
       },
     ];
 
+    const trashEntries: TrashEntry[] = [];
+
     const html = renderToStaticMarkup(
       <NoteList
         directoryPath="/vault"
         notes={notes}
+        trashEntries={trashEntries}
         selectedNoteId={null}
         selectedFolderPath={null}
         availableTags={["idea", "project"]}
         selectedTags={["idea", "project"]}
         onOpenVault={() => {}}
         onCreateNote={() => {}}
+        onRenameNote={() => {}}
+        onMoveNote={() => {}}
         onCreateFolder={() => {}}
+        onRenameFolder={() => {}}
+        onMoveFolder={() => {}}
+        onDeleteFolder={() => {}}
         onSelectFolder={() => {}}
         onSelectNote={() => {}}
         onOpenInNewPane={() => {}}
         onDeleteNote={() => {}}
         onToggleTagFilter={() => {}}
         onClearTagFilters={() => {}}
+        onRestoreTrashEntry={() => {}}
+        onPermanentlyDeleteTrashEntry={() => {}}
         errorMessage={null}
       />
     );

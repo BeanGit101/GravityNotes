@@ -88,4 +88,44 @@ describe("paneSessionReducer", () => {
     expect(result.panes).toEqual([{ id: "pane-1", noteId: "note-1" }]);
     expect(result.activePaneId).toBe("pane-1");
   });
+
+  it("remaps note ids across open panes", () => {
+    const state: PaneSessionState = {
+      panes: [
+        { id: "pane-1", noteId: "note-1" },
+        { id: "pane-2", noteId: "note-2" },
+      ],
+      activePaneId: "pane-2",
+    };
+
+    const result = reduce(state, {
+      type: "remap-note-ids",
+      noteIds: { "note-2": "note-2-renamed" },
+    });
+
+    expect(result.panes).toEqual([
+      { id: "pane-1", noteId: "note-1" },
+      { id: "pane-2", noteId: "note-2-renamed" },
+    ]);
+    expect(result.activePaneId).toBe("pane-2");
+  });
+
+  it("removes multiple deleted notes at once", () => {
+    const state: PaneSessionState = {
+      panes: [
+        { id: "pane-1", noteId: "note-1" },
+        { id: "pane-2", noteId: "note-2" },
+        { id: "pane-3", noteId: "note-3" },
+      ],
+      activePaneId: "pane-2",
+    };
+
+    const result = reduce(state, {
+      type: "remove-notes",
+      noteIds: ["note-1", "note-2"],
+    });
+
+    expect(result.panes).toEqual([{ id: "pane-3", noteId: "note-3" }]);
+    expect(result.activePaneId).toBe("pane-3");
+  });
 });
