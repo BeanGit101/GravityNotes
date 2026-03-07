@@ -11,6 +11,7 @@ import {
 import "./App.css";
 import { NoteEditor } from "./components/NoteEditor";
 import { NoteList } from "./components/NoteList";
+import { NoteListErrorBoundary } from "./components/NoteListErrorBoundary";
 import { PaneContainer } from "./components/PaneContainer";
 import {
   createFolder,
@@ -31,6 +32,7 @@ import {
   updateNote,
 } from "./services/notesService";
 import { initialPaneSessionState, paneSessionReducer, type OpenMode } from "./state/paneReducer";
+import { markStartupError, markStartupReady, recordStartupEvent } from "./state/startupDiagnostics";
 import type { NoteViewMode } from "./types/editor";
 import type { FileSystemItem, Note, TrashEntry } from "./types/notes";
 
@@ -129,12 +131,26 @@ function remapRecordValues<T>(
     return current;
   }
 
+  const hasRemappedKeys = Object.keys(current).some((key) => {
+    const nextKey = mapping[key];
+    return typeof nextKey === "string" && nextKey !== key;
+  });
+
+  if (!hasRemappedKeys) {
+    return current;
+  }
+
   return Object.fromEntries(
     Object.entries(current).map(([key, value]) => [mapping[key] ?? key, value])
   ) as Record<string, T>;
 }
 
 function removeRecordKeys<T>(current: Record<string, T>, noteIds: Set<string>): Record<string, T> {
+  const hasRemovedKeys = Object.keys(current).some((key) => noteIds.has(key));
+  if (!hasRemovedKeys) {
+    return current;
+  }
+
   return Object.fromEntries(Object.entries(current).filter(([key]) => !noteIds.has(key))) as Record<
     string,
     T
@@ -142,21 +158,25 @@ function removeRecordKeys<T>(current: Record<string, T>, noteIds: Set<string>): 
 }
 
 function remapSetValues(current: Set<string>, mapping: Record<string, string>): Set<string> {
-  const next = new Set<string>();
-  current.forEach((value) => {
-    next.add(mapping[value] ?? value);
+  const hasRemappedValues = Array.from(current).some((value) => {
+    const nextValue = mapping[value];
+    return typeof nextValue === "string" && nextValue !== value;
   });
-  return next;
+
+  if (!hasRemappedValues) {
+    return current;
+  }
+
+  return new Set(Array.from(current, (value) => mapping[value] ?? value));
 }
 
 function removeSetValues(current: Set<string>, noteIds: Set<string>): Set<string> {
-  const next = new Set<string>();
-  current.forEach((value) => {
-    if (!noteIds.has(value)) {
-      next.add(value);
-    }
-  });
-  return next;
+  const hasRemovedValues = Array.from(current).some((value) => noteIds.has(value));
+  if (!hasRemovedValues) {
+    return current;
+  }
+
+  return new Set(Array.from(current).filter((value) => !noteIds.has(value)));
 }
 
 function App() {
@@ -190,6 +210,8 @@ function App() {
   });
 
   const resizeStateRef = useRef<{ startX: number; startWidth: number } | null>(null);
+  const didRecordMountRef = useRef(false);
+  const didMarkReadyRef = useRef(false);
   const loadingRef = useRef<Set<string>>(new Set());
   const cryptoRef = useRef((globalThis as { crypto?: Crypto }).crypto);
 
@@ -248,6 +270,7 @@ function App() {
 
   const refreshVaultState = useCallback(async () => {
     if (!notesDirectory) {
+      recordStartupEvent("vault.unselected");
       setNotes([]);
       setTrashEntries([]);
       dispatchPane({ type: "reset" });
@@ -257,6 +280,7 @@ function App() {
       return;
     }
 
+    recordStartupEvent("vault.refresh.started", { hasSelectedVault: true });
     setIsLoading(true);
     setErrorMessage(null);
 
@@ -288,13 +312,45 @@ function App() {
           new Set(Array.from(current).filter((key) => !existingIds.has(key)))
         )
       );
+      recordStartupEvent("vault.refresh.succeeded", {
+        noteCount: existingIds.size,
+        trashCount: trash.length,
+      });
     } catch (error) {
       console.error(error);
+      const message = error instanceof Error ? error.message : String(error);
+      markStartupError("vault.refresh.failed", { message });
       setErrorMessage("Unable to load notes. Check folder permissions.");
     } finally {
       setIsLoading(false);
     }
   }, [notesDirectory]);
+
+  useEffect(() => {
+    if (!didRecordMountRef.current) {
+      didRecordMountRef.current = true;
+      recordStartupEvent("app.mounted", { hasSelectedVault: Boolean(notesDirectory) });
+    }
+  }, [notesDirectory]);
+
+  useEffect(() => {
+    if (didMarkReadyRef.current) {
+      return;
+    }
+
+    const handle = window.requestAnimationFrame(() => {
+      didMarkReadyRef.current = true;
+      markStartupReady({
+        activePaneCount: paneSession.panes.length,
+        hasSelectedVault: Boolean(notesDirectory),
+        hasShell: Boolean(document.querySelector(".app-shell")),
+      });
+    });
+
+    return () => {
+      window.cancelAnimationFrame(handle);
+    };
+  }, [notesDirectory, paneSession.panes.length]);
 
   useEffect(() => {
     void refreshVaultState();
@@ -531,7 +587,13 @@ function App() {
   };
 
   const handleChangeNoteContent = (noteId: string, nextValue: string) => {
-    setNoteContents((current) => ({ ...current, [noteId]: nextValue }));
+    setNoteContents((current) => {
+      if (current[noteId] === nextValue) {
+        return current;
+      }
+
+      return { ...current, [noteId]: nextValue };
+    });
   };
 
   const handleClosePane = (paneId: string) => {
@@ -578,56 +640,58 @@ function App() {
       style={{ "--sidebar-width": `${String(resolvedSidebarWidth)}px` } as CSSProperties}
     >
       <aside className={`app-sidebar ${sidebarCollapsed ? "app-sidebar--collapsed" : ""}`}>
-        <NoteList
-          directoryPath={notesDirectory}
-          notes={notes}
-          trashEntries={trashEntries}
-          selectedNoteId={activeNoteId}
-          selectedFolderPath={selectedFolderPath}
-          onOpenVault={() => {
-            void handleOpenVault();
-          }}
-          onCreateNote={(title) => {
-            void handleCreateNote(title);
-          }}
-          onRenameNote={(note, title) => {
-            void handleRenameNote(note, title);
-          }}
-          onMoveNote={(note, folderPath) => {
-            void handleMoveNote(note, folderPath);
-          }}
-          onCreateFolder={(name) => {
-            void handleCreateFolder(name);
-          }}
-          onRenameFolder={(folderPath, name) => {
-            void handleRenameFolder(folderPath, name);
-          }}
-          onMoveFolder={(folderPath, nextFolderPath) => {
-            void handleMoveFolder(folderPath, nextFolderPath);
-          }}
-          onDeleteFolder={(folderPath) => {
-            void handleDeleteFolder(folderPath);
-          }}
-          onSelectFolder={(folderPath) => {
-            setSelectedFolderPath(folderPath);
-          }}
-          onSelectNote={(note) => {
-            void openNoteInPane(note, "active");
-          }}
-          onOpenInNewPane={(note) => {
-            void openNoteInPane(note, "new");
-          }}
-          onDeleteNote={(note) => {
-            void handleDeleteNote(note);
-          }}
-          onRestoreTrashEntry={(entry) => {
-            void handleRestoreTrashEntry(entry);
-          }}
-          onPermanentlyDeleteTrashEntry={(entry) => {
-            void handlePermanentDeleteTrashEntry(entry);
-          }}
-          errorMessage={errorMessage}
-        />
+        <NoteListErrorBoundary>
+          <NoteList
+            directoryPath={notesDirectory}
+            notes={notes}
+            trashEntries={trashEntries}
+            selectedNoteId={activeNoteId}
+            selectedFolderPath={selectedFolderPath}
+            onOpenVault={() => {
+              void handleOpenVault();
+            }}
+            onCreateNote={(title) => {
+              void handleCreateNote(title);
+            }}
+            onRenameNote={(note, title) => {
+              void handleRenameNote(note, title);
+            }}
+            onMoveNote={(note, folderPath) => {
+              void handleMoveNote(note, folderPath);
+            }}
+            onCreateFolder={(name) => {
+              void handleCreateFolder(name);
+            }}
+            onRenameFolder={(folderPath, name) => {
+              void handleRenameFolder(folderPath, name);
+            }}
+            onMoveFolder={(folderPath, nextFolderPath) => {
+              void handleMoveFolder(folderPath, nextFolderPath);
+            }}
+            onDeleteFolder={(folderPath) => {
+              void handleDeleteFolder(folderPath);
+            }}
+            onSelectFolder={(folderPath) => {
+              setSelectedFolderPath(folderPath);
+            }}
+            onSelectNote={(note) => {
+              void openNoteInPane(note, "active");
+            }}
+            onOpenInNewPane={(note) => {
+              void openNoteInPane(note, "new");
+            }}
+            onDeleteNote={(note) => {
+              void handleDeleteNote(note);
+            }}
+            onRestoreTrashEntry={(entry) => {
+              void handleRestoreTrashEntry(entry);
+            }}
+            onPermanentlyDeleteTrashEntry={(entry) => {
+              void handlePermanentDeleteTrashEntry(entry);
+            }}
+            errorMessage={errorMessage}
+          />
+        </NoteListErrorBoundary>
         {isLoading && <p className="note-list__loading">Loading notes...</p>}
       </aside>
 
@@ -686,7 +750,7 @@ function App() {
             value=""
             onChange={() => {}}
             onAutoSave={async () => {}}
-            isLoading
+            isLoading={false}
             viewMode="edit"
           />
         )}

@@ -42,8 +42,7 @@ body {
   display: grid;
   grid-template-columns: var(--sidebar-width) var(--sidebar-handle) 1fr;
   grid-template-rows: 1fr;
-  background: rgba(250, 248, 245, 0.8);
-  backdrop-filter: blur(20px);
+  background: #faf8f5;
 }
 
 .app-sidebar {

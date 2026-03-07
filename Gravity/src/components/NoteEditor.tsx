@@ -128,7 +128,7 @@ export function NoteEditor({
   const placeholderCompartment = useMemo(() => new Compartment(), []);
   const checkboxToggleCompartment = useMemo(() => new Compartment(), []);
 
-  const selectMatch = useCallback((match: SearchMatch | null) => {
+  const selectMatch = useCallback((match: SearchMatch | null, focusEditor = false) => {
     const view = viewRef.current;
     if (!view || !match) {
       return;
@@ -138,7 +138,9 @@ export function NoteEditor({
       selection: EditorSelection.single(match.from, match.to),
       scrollIntoView: true,
     });
-    view.focus();
+    if (focusEditor) {
+      view.focus();
+    }
   }, []);
 
   const openFind = useCallback((nextShowReplace: boolean) => {
@@ -170,7 +172,7 @@ export function NoteEditor({
         const next = (current + direction + matches.length) % matches.length;
         window.requestAnimationFrame(() => {
           const match = matches[next] ?? null;
-          selectMatch(match);
+          selectMatch(match, true);
         });
         return next;
       });
@@ -191,6 +193,7 @@ export function NoteEditor({
       selection: EditorSelection.single(activeMatch.from, activeMatch.from + replaceValue.length),
       scrollIntoView: true,
     });
+    view.focus();
 
     const nextMatches = findMatches(nextValue, findQuery, matchCase);
     setActiveMatchIndex(Math.min(resolvedActiveMatchIndex, Math.max(nextMatches.length - 1, 0)));
@@ -227,6 +230,7 @@ export function NoteEditor({
       selection: EditorSelection.single(0),
       scrollIntoView: true,
     });
+    view.focus();
     setActiveMatchIndex(0);
   }, [findQuery, isLoading, isPreviewMode, matches, replaceValue]);
 

@@ -1,5 +1,14 @@
-import { useEffect, useMemo, useState, type CSSProperties, type FormEvent } from "react";
+import {
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type CSSProperties,
+  type FormEvent,
+} from "react";
 import { buildFilenameSearchResults } from "../services/notesService";
+import { recordStartupEvent } from "../state/startupDiagnostics";
 import type { FileSystemItem, FolderItem, Note, TrashEntry } from "../types/notes";
 
 interface NoteListProps {
@@ -95,14 +104,6 @@ function findFolderByPath(items: FileSystemItem[], path: string | null): FolderI
   return null;
 }
 
-function setsEqual(left: Set<string>, right: Set<string>): boolean {
-  if (left.size !== right.size) {
-    return false;
-  }
-
-  return Array.from(left).every((value) => right.has(value));
-}
-
 export function findFolderChainForNote(items: FileSystemItem[], noteId: string): string[] | null {
   for (const item of items) {
     if (item.type === "file" && item.id === noteId) {
@@ -118,7 +119,16 @@ export function findFolderChainForNote(items: FileSystemItem[], noteId: string):
   return null;
 }
 
-function toRelativePath(basePath: string, targetPath: string): string {
+function toRelativePath(
+  basePath: string | null | undefined,
+  targetPath: string | null | undefined
+): string {
+  if (!targetPath) {
+    return "";
+  }
+  if (!basePath) {
+    return targetPath;
+  }
   if (!targetPath.startsWith(basePath)) {
     return targetPath;
   }
@@ -221,6 +231,7 @@ export function NoteList({
   onPermanentlyDeleteTrashEntry,
   errorMessage,
 }: NoteListProps) {
+  const renderCountRef = useRef(0);
   const [newTitle, setNewTitle] = useState("");
   const [newFolderName, setNewFolderName] = useState("");
   const [searchQuery, setSearchQuery] = useState("");
@@ -233,6 +244,7 @@ export function NoteList({
   } | null>(null);
   const canCreate = Boolean(directoryPath && newTitle.trim());
   const canCreateFolder = Boolean(directoryPath && newFolderName.trim());
+  const isContextMenuOpen = contextMenu !== null;
 
   const { totalNotes, folderNoteCounts } = useMemo(() => buildNotesTreeStats(notes), [notes]);
   const folderOptions = useMemo(
@@ -243,12 +255,16 @@ export function NoteList({
     () => buildFilenameSearchResults(notes, searchQuery, directoryPath),
     [directoryPath, notes, searchQuery]
   );
+  const prunedExpandedFolders = useMemo(
+    () => pruneExpandedFolders(expandedFolders, notes),
+    [expandedFolders, notes]
+  );
 
   // effectiveExpandedFolders = pruned user-expanded folders merged with auto-expanded folders
-  const effectiveExpandedFolders = useMemo(() => {
-    const pruned = pruneExpandedFolders(expandedFolders, notes);
-    return expandFoldersForNoteSelection(notes, pruned, selectedNoteId);
-  }, [expandedFolders, notes, selectedNoteId]);
+  const effectiveExpandedFolders = useMemo(
+    () => expandFoldersForNoteSelection(notes, prunedExpandedFolders, selectedNoteId),
+    [notes, prunedExpandedFolders, selectedNoteId]
+  );
 
   const selectedFolderLabel = useMemo(() => {
     if (!selectedFolderPath) {
@@ -257,6 +273,19 @@ export function NoteList({
     const match = findFolderByPath(notes, selectedFolderPath);
     return match?.name ?? "Selected folder";
   }, [notes, selectedFolderPath]);
+
+  const closeContextMenu = useCallback(() => {
+    setContextMenu(null);
+  }, []);
+
+  const handleWindowKeyDown = useCallback(
+    (event: KeyboardEvent) => {
+      if (event.key === "Escape") {
+        closeContextMenu();
+      }
+    },
+    [closeContextMenu]
+  );
 
   const handleCreate = (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
@@ -272,44 +301,42 @@ export function NoteList({
     setNewFolderName("");
   };
 
-  // When notes or expandedFolders change ensure state is pruned to valid folder paths.
   useEffect(() => {
-    const prunedFolders = pruneExpandedFolders(expandedFolders, notes);
-    if (setsEqual(prunedFolders, expandedFolders)) {
+    if (!import.meta.env.DEV || import.meta.env.MODE === "test") {
       return;
     }
-    let cancelled = false;
-    queueMicrotask(() => {
-      if (!cancelled) {
-        setExpandedFolders(prunedFolders);
-      }
-    });
-    return () => {
-      cancelled = true;
-    };
-  }, [expandedFolders, notes]);
+
+    renderCountRef.current += 1;
+    if (renderCountRef.current > 20) {
+      recordStartupEvent("notelist.render.loop.detected", {
+        renderCount: renderCountRef.current,
+        noteCount: notes.length,
+        hasSelectedFolder: Boolean(selectedFolderPath),
+        hasSelectedNote: Boolean(selectedNoteId),
+      });
+      console.error("NoteList render loop detected", {
+        directoryPath,
+        renderCount: renderCountRef.current,
+        noteCount: notes.length,
+        selectedFolderPath,
+        selectedNoteId,
+      });
+    }
+  });
 
   useEffect(() => {
-    if (!contextMenu) return;
+    if (!isContextMenuOpen) {
+      return;
+    }
 
-    const handleClick = () => {
-      setContextMenu(null);
-    };
-
-    const handleKey = (event: KeyboardEvent) => {
-      if (event.key === "Escape") {
-        setContextMenu(null);
-      }
-    };
-
-    window.addEventListener("click", handleClick);
-    window.addEventListener("keydown", handleKey);
+    window.addEventListener("click", closeContextMenu);
+    window.addEventListener("keydown", handleWindowKeyDown);
 
     return () => {
-      window.removeEventListener("click", handleClick);
-      window.removeEventListener("keydown", handleKey);
+      window.removeEventListener("click", closeContextMenu);
+      window.removeEventListener("keydown", handleWindowKeyDown);
     };
-  }, [contextMenu]);
+  }, [closeContextMenu, handleWindowKeyDown, isContextMenuOpen]);
 
   const promptForFolderDestination = (
     title: string,
@@ -343,10 +370,14 @@ export function NoteList({
     return match.path;
   };
 
+  const openNoteInSplitPane = (note: Note) => {
+    onOpenInNewPane(note);
+  };
+
   const runContextAction = (target: ContextTarget, action: string) => {
     if (target.kind === "note") {
       if (action === "split") {
-        onOpenInNewPane(target.note);
+        openNoteInSplitPane(target.note);
         return;
       }
       if (action === "rename") {
@@ -391,6 +422,13 @@ export function NoteList({
     }
   };
 
+  const handleContextAction = (target: ContextTarget, action: string) => {
+    closeContextMenu();
+    window.setTimeout(() => {
+      runContextAction(target, action);
+    }, 0);
+  };
+
   const renderNoteRow = (note: Note, depth: number, folderLabel?: string) => {
     const depthStyle = { "--depth": depth } as CSSProperties;
     return (
@@ -424,7 +462,7 @@ export function NoteList({
             type="button"
             onClick={(event) => {
               event.stopPropagation();
-              onOpenInNewPane(note);
+              openNoteInSplitPane(note);
             }}
             aria-label={`Open ${note.title} in a new pane`}
           >
@@ -481,7 +519,9 @@ export function NoteList({
                 type="button"
                 onClick={() => {
                   if (!hasChildren) return;
-                  setExpandedFolders(toggleExpandedFolder(effectiveExpandedFolders, item.path));
+                  setExpandedFolders((current) =>
+                    toggleExpandedFolder(pruneExpandedFolders(current, notes), item.path)
+                  );
                 }}
                 aria-label={`${isExpanded ? "Collapse" : "Expand"} ${item.name}`}
                 disabled={!hasChildren}
@@ -493,9 +533,15 @@ export function NoteList({
                 type="button"
                 onClick={() => {
                   onSelectFolder(item.path);
-                  const next = new Set(effectiveExpandedFolders);
-                  next.add(item.path);
-                  setExpandedFolders(next);
+                  setExpandedFolders((current) => {
+                    const prunedCurrent = pruneExpandedFolders(current, notes);
+                    if (prunedCurrent.has(item.path)) {
+                      return prunedCurrent;
+                    }
+                    const next = new Set(prunedCurrent);
+                    next.add(item.path);
+                    return next;
+                  });
                 }}
               >
                 <span className="note-list__label">{item.name}</span>
@@ -661,7 +707,8 @@ export function NoteList({
                     <div>
                       <p className="note-list__trash-name">{entry.name}</p>
                       <p className="note-list__subtle">
-                        {toRelativePath(directoryPath, entry.originalPath)}
+                        {toRelativePath(directoryPath, entry.originalPath) ||
+                          "Original path unavailable"}
                       </p>
                     </div>
                     <div className="note-list__trash-actions">
@@ -704,7 +751,7 @@ export function NoteList({
                 className="note-list__menu-item"
                 type="button"
                 onClick={() => {
-                  runContextAction(contextMenu.target, "split");
+                  handleContextAction(contextMenu.target, "split");
                 }}
                 role="menuitem"
               >
@@ -714,7 +761,7 @@ export function NoteList({
                 className="note-list__menu-item"
                 type="button"
                 onClick={() => {
-                  runContextAction(contextMenu.target, "rename");
+                  handleContextAction(contextMenu.target, "rename");
                 }}
                 role="menuitem"
               >
@@ -724,7 +771,7 @@ export function NoteList({
                 className="note-list__menu-item"
                 type="button"
                 onClick={() => {
-                  runContextAction(contextMenu.target, "move");
+                  handleContextAction(contextMenu.target, "move");
                 }}
                 role="menuitem"
               >
@@ -734,7 +781,7 @@ export function NoteList({
                 className="note-list__menu-item"
                 type="button"
                 onClick={() => {
-                  runContextAction(contextMenu.target, "trash");
+                  handleContextAction(contextMenu.target, "trash");
                 }}
                 role="menuitem"
               >
@@ -747,7 +794,7 @@ export function NoteList({
                 className="note-list__menu-item"
                 type="button"
                 onClick={() => {
-                  runContextAction(contextMenu.target, "rename");
+                  handleContextAction(contextMenu.target, "rename");
                 }}
                 role="menuitem"
               >
@@ -757,7 +804,7 @@ export function NoteList({
                 className="note-list__menu-item"
                 type="button"
                 onClick={() => {
-                  runContextAction(contextMenu.target, "move");
+                  handleContextAction(contextMenu.target, "move");
                 }}
                 role="menuitem"
               >
@@ -767,7 +814,7 @@ export function NoteList({
                 className="note-list__menu-item"
                 type="button"
                 onClick={() => {
-                  runContextAction(contextMenu.target, "trash");
+                  handleContextAction(contextMenu.target, "trash");
                 }}
                 role="menuitem"
               >
