@@ -2,6 +2,20 @@ export interface Note {
   id: string;
   title: string;
   path: string;
+  subject?: string;
+  tags: string[];
+  updatedAt?: string;
+}
+
+export interface NoteMetadata {
+  subject?: string;
+  tags: string[];
+  updatedAt?: string;
+}
+
+export interface NoteDocument {
+  body: string;
+  metadata: NoteMetadata;
 }
 
 export interface NoteItem extends Note {
@@ -23,16 +37,6 @@ export interface TrashEntry {
   type: "file" | "folder";
   deletedAt: number;
 }
-
-export type NoteMetadataValue =
-  | string
-  | number
-  | boolean
-  | null
-  | NoteMetadataValue[]
-  | { [key: string]: NoteMetadataValue };
-
-export type NoteMetadata = Record<string, NoteMetadataValue>;
 
 export interface TemplateItem {
   id: string;

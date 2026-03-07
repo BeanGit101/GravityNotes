@@ -10,6 +10,7 @@ import {
 import { buildFilenameSearchResults } from "../services/notesService";
 import { recordStartupEvent } from "../state/startupDiagnostics";
 import type { FileSystemItem, FolderItem, Note, TrashEntry } from "../types/notes";
+import { normalizeTag } from "../utils/frontmatter";
 
 interface NoteListProps {
   directoryPath: string;
@@ -17,6 +18,8 @@ interface NoteListProps {
   trashEntries: TrashEntry[];
   selectedNoteId: string | null;
   selectedFolderPath: string | null;
+  availableTags: string[];
+  selectedTags: string[];
   onOpenVault: () => void;
   onCreateNote: (title: string) => void;
   onRenameNote: (note: Note, title: string) => void;
@@ -29,6 +32,8 @@ interface NoteListProps {
   onSelectNote: (note: Note) => void;
   onOpenInNewPane: (note: Note) => void;
   onDeleteNote: (note: Note) => void;
+  onToggleTagFilter: (tag: string) => void;
+  onClearTagFilters: () => void;
   onRestoreTrashEntry: (entry: TrashEntry) => void;
   onPermanentlyDeleteTrashEntry: (entry: TrashEntry) => void;
   errorMessage: string | null;
@@ -117,6 +122,38 @@ export function findFolderChainForNote(items: FileSystemItem[], noteId: string):
     }
   }
   return null;
+}
+
+function noteMatchesSelectedTags(note: Note, selectedTags: string[]): boolean {
+  if (selectedTags.length === 0) {
+    return true;
+  }
+
+  const noteTags = new Set(note.tags.map((tag) => normalizeTag(tag).toLocaleLowerCase()));
+  return selectedTags.every((tag) => noteTags.has(normalizeTag(tag).toLocaleLowerCase()));
+}
+
+function filterNotesTree(items: FileSystemItem[], selectedTags: string[]): FileSystemItem[] {
+  const filtered: FileSystemItem[] = [];
+
+  items.forEach((item) => {
+    if (item.type === "file") {
+      if (noteMatchesSelectedTags(item, selectedTags)) {
+        filtered.push(item);
+      }
+      return;
+    }
+
+    const children = filterNotesTree(item.children, selectedTags);
+    if (children.length > 0) {
+      filtered.push({
+        ...item,
+        children,
+      });
+    }
+  });
+
+  return filtered;
 }
 
 function toRelativePath(
@@ -215,6 +252,8 @@ export function NoteList({
   trashEntries,
   selectedNoteId,
   selectedFolderPath,
+  availableTags,
+  selectedTags,
   onOpenVault,
   onCreateNote,
   onRenameNote,
@@ -227,6 +266,8 @@ export function NoteList({
   onSelectNote,
   onOpenInNewPane,
   onDeleteNote,
+  onToggleTagFilter,
+  onClearTagFilters,
   onRestoreTrashEntry,
   onPermanentlyDeleteTrashEntry,
   errorMessage,
@@ -246,24 +287,31 @@ export function NoteList({
   const canCreateFolder = Boolean(directoryPath && newFolderName.trim());
   const isContextMenuOpen = contextMenu !== null;
 
-  const { totalNotes, folderNoteCounts } = useMemo(() => buildNotesTreeStats(notes), [notes]);
+  const filteredNotes = useMemo(() => filterNotesTree(notes, selectedTags), [notes, selectedTags]);
+
+  const { totalNotes, folderNoteCounts } = useMemo(
+    () => buildNotesTreeStats(filteredNotes),
+    [filteredNotes]
+  );
+
   const folderOptions = useMemo(
     () => collectFolderOptions(notes, directoryPath),
     [notes, directoryPath]
   );
+
   const searchResults = useMemo(
-    () => buildFilenameSearchResults(notes, searchQuery, directoryPath),
-    [directoryPath, notes, searchQuery]
-  );
-  const prunedExpandedFolders = useMemo(
-    () => pruneExpandedFolders(expandedFolders, notes),
-    [expandedFolders, notes]
+    () => buildFilenameSearchResults(filteredNotes, searchQuery, directoryPath),
+    [directoryPath, filteredNotes, searchQuery]
   );
 
-  // effectiveExpandedFolders = pruned user-expanded folders merged with auto-expanded folders
+  const prunedExpandedFolders = useMemo(
+    () => pruneExpandedFolders(expandedFolders, filteredNotes),
+    [expandedFolders, filteredNotes]
+  );
+
   const effectiveExpandedFolders = useMemo(
-    () => expandFoldersForNoteSelection(notes, prunedExpandedFolders, selectedNoteId),
-    [notes, prunedExpandedFolders, selectedNoteId]
+    () => expandFoldersForNoteSelection(filteredNotes, prunedExpandedFolders, selectedNoteId),
+    [filteredNotes, prunedExpandedFolders, selectedNoteId]
   );
 
   const selectedFolderLabel = useMemo(() => {
@@ -431,6 +479,11 @@ export function NoteList({
 
   const renderNoteRow = (note: Note, depth: number, folderLabel?: string) => {
     const depthStyle = { "--depth": depth } as CSSProperties;
+    const metadataLine =
+      note.subject || note.tags.length > 0
+        ? (note.subject ?? note.tags.map((tag) => `#${tag}`).join(" "))
+        : folderLabel;
+
     return (
       <li key={note.id} className="note-list__item">
         <div
@@ -448,14 +501,14 @@ export function NoteList({
           }}
         >
           <button
-            className="note-list__select"
+            className="note-list__select note-list__select--file"
             type="button"
             onClick={() => {
               onSelectNote(note);
             }}
           >
-            <span className="note-list__title-line">{note.title}</span>
-            {folderLabel && <span className="note-list__subtle">{folderLabel}</span>}
+            <span className="note-list__file-title">{note.title}</span>
+            {metadataLine && <span className="note-list__file-meta">{metadataLine}</span>}
           </button>
           <button
             className="note-list__split"
@@ -655,6 +708,44 @@ export function NoteList({
         </div>
       )}
 
+      {directoryPath && (
+        <div className="note-list__filters">
+          <div className="note-list__filters-header">
+            <div>
+              <p className="note-list__selection-label">Filter Tags</p>
+              <p className="note-list__filters-copy">All selected tags must match.</p>
+            </div>
+            {selectedTags.length > 0 && (
+              <button className="note-list__link" type="button" onClick={onClearTagFilters}>
+                Clear filters
+              </button>
+            )}
+          </div>
+          <div className="note-list__filter-tags">
+            {availableTags.map((tag) => {
+              const isActive = selectedTags.some(
+                (selectedTag) =>
+                  normalizeTag(selectedTag).toLocaleLowerCase() ===
+                  normalizeTag(tag).toLocaleLowerCase()
+              );
+
+              return (
+                <button
+                  key={tag}
+                  className={`note-list__tag-filter ${isActive ? "note-list__tag-filter--active" : ""}`}
+                  type="button"
+                  onClick={() => {
+                    onToggleTagFilter(tag);
+                  }}
+                >
+                  #{tag}
+                </button>
+              );
+            })}
+          </div>
+        </div>
+      )}
+
       {errorMessage && <p className="note-list__error">{errorMessage}</p>}
 
       {directoryPath && searchQuery.trim() ? (
@@ -678,9 +769,13 @@ export function NoteList({
         directoryPath && (
           <ul className="note-list__items">
             {totalNotes === 0 && (
-              <li className="note-list__empty">No notes yet. Create the first one.</li>
+              <li className="note-list__empty">
+                {selectedTags.length > 0
+                  ? "No notes match the selected tags."
+                  : "No notes yet. Create the first one."}
+              </li>
             )}
-            {renderItems(notes)}
+            {renderItems(filteredNotes)}
           </ul>
         )
       )}

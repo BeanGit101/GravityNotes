@@ -34,7 +34,15 @@ import {
 import { initialPaneSessionState, paneSessionReducer, type OpenMode } from "./state/paneReducer";
 import { markStartupError, markStartupReady, recordStartupEvent } from "./state/startupDiagnostics";
 import type { NoteViewMode } from "./types/editor";
-import type { FileSystemItem, Note, TrashEntry } from "./types/notes";
+import type { FileSystemItem, Note, NoteDocument, NoteMetadata, TrashEntry } from "./types/notes";
+import {
+  DEFAULT_TAG_OPTIONS,
+  createEmptyNoteMetadata,
+  normalizeNoteMetadata,
+  normalizeTag,
+  parseNoteDocument,
+  serializeNoteDocument,
+} from "./utils/frontmatter";
 
 function folderExists(items: FileSystemItem[], path: string): boolean {
   for (const item of items) {
@@ -65,6 +73,45 @@ function collectNoteIds(items: FileSystemItem[]): Set<string> {
 
   visit(items);
   return ids;
+}
+
+function flattenNotes(items: FileSystemItem[]): Note[] {
+  const notes: Note[] = [];
+
+  const visit = (entries: FileSystemItem[]) => {
+    entries.forEach((entry) => {
+      if (entry.type === "file") {
+        notes.push(entry);
+      } else {
+        visit(entry.children);
+      }
+    });
+  };
+
+  visit(items);
+  return notes;
+}
+
+function mergeMetadataIntoItems(
+  items: FileSystemItem[],
+  noteMetadataById: Record<string, NoteMetadata>
+): FileSystemItem[] {
+  return items.map((item) => {
+    if (item.type === "folder") {
+      return {
+        ...item,
+        children: mergeMetadataIntoItems(item.children, noteMetadataById),
+      };
+    }
+
+    const metadata = normalizeNoteMetadata(noteMetadataById[item.id] ?? item);
+    return {
+      ...item,
+      subject: metadata.subject,
+      tags: metadata.tags,
+      updatedAt: metadata.updatedAt,
+    };
+  });
 }
 
 function collectNoteIdsInFolder(items: FileSystemItem[], folderPath: string): string[] {
@@ -190,11 +237,13 @@ function App() {
   const [trashEntries, setTrashEntries] = useState<TrashEntry[]>([]);
   const [paneSession, dispatchPane] = useReducer(paneSessionReducer, initialPaneSessionState);
   const [noteContents, setNoteContents] = useState<Record<string, string>>({});
+  const [noteMetadataById, setNoteMetadataById] = useState<Record<string, NoteMetadata>>({});
   const [noteViewModes, setNoteViewModes] = useState<Record<string, NoteViewMode>>({});
   const [loadingNoteIds, setLoadingNoteIds] = useState<Set<string>>(() => new Set());
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [isLoading, setIsLoading] = useState(false);
   const [selectedFolderPath, setSelectedFolderPath] = useState<string | null>(null);
+  const [selectedTagFilters, setSelectedTagFilters] = useState<string[]>([]);
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
   const [sidebarWidth, setSidebarWidth] = useState(() => {
     if (typeof window === "undefined") {
@@ -215,6 +264,11 @@ function App() {
   const loadingRef = useRef<Set<string>>(new Set());
   const cryptoRef = useRef((globalThis as { crypto?: Crypto }).crypto);
 
+  const notesWithMetadata = useMemo(
+    () => mergeMetadataIntoItems(notes, noteMetadataById),
+    [noteMetadataById, notes]
+  );
+
   const noteIndex = useMemo(() => {
     const map = new Map<string, Note>();
     const walk = (items: FileSystemItem[]) => {
@@ -227,9 +281,30 @@ function App() {
       });
     };
 
-    walk(notes);
+    walk(notesWithMetadata);
     return map;
-  }, [notes]);
+  }, [notesWithMetadata]);
+
+  const availableTags = useMemo(() => {
+    const defaultTagKeys = new Set(DEFAULT_TAG_OPTIONS.map((tag) => tag.toLocaleLowerCase()));
+    const customTags = new Map<string, string>();
+
+    Object.values(noteMetadataById).forEach((metadata) => {
+      const normalized = normalizeNoteMetadata(metadata);
+      normalized.tags.forEach((tag) => {
+        const key = tag.toLocaleLowerCase();
+        if (defaultTagKeys.has(key) || customTags.has(key)) {
+          return;
+        }
+        customTags.set(key, tag);
+      });
+    });
+
+    return [
+      ...DEFAULT_TAG_OPTIONS,
+      ...Array.from(customTags.values()).sort((left, right) => left.localeCompare(right)),
+    ];
+  }, [noteMetadataById]);
 
   const getNoteById = useCallback((noteId: string) => noteIndex.get(noteId) ?? null, [noteIndex]);
 
@@ -252,6 +327,7 @@ function App() {
 
     dispatchPane({ type: "remap-note-ids", noteIds: mapping });
     setNoteContents((current) => remapRecordValues(current, mapping));
+    setNoteMetadataById((current) => remapRecordValues(current, mapping));
     setNoteViewModes((current) => remapRecordValues(current, mapping));
     setLoadingNoteIds((current) => remapSetValues(current, mapping));
   }, []);
@@ -264,6 +340,7 @@ function App() {
     const removed = new Set(noteIds);
     dispatchPane({ type: "remove-notes", noteIds });
     setNoteContents((current) => removeRecordKeys(current, removed));
+    setNoteMetadataById((current) => removeRecordKeys(current, removed));
     setNoteViewModes((current) => removeRecordKeys(current, removed));
     setLoadingNoteIds((current) => removeSetValues(current, removed));
   }, []);
@@ -275,8 +352,10 @@ function App() {
       setTrashEntries([]);
       dispatchPane({ type: "reset" });
       setNoteContents({});
+      setNoteMetadataById({});
       setNoteViewModes({});
       setLoadingNoteIds(new Set());
+      setSelectedTagFilters([]);
       return;
     }
 
@@ -286,6 +365,45 @@ function App() {
 
     try {
       const [entries, trash] = await Promise.all([listNotesWithFolders(), listTrashEntries()]);
+      const flatNotes = flattenNotes(entries);
+
+      setLoadingNoteIds(new Set(flatNotes.map((note) => note.id)));
+
+      const settledDocuments = await Promise.allSettled(
+        flatNotes.map(async (note) => {
+          const rawContent = await readNote(note.path);
+          return {
+            noteId: note.id,
+            document: parseNoteDocument(rawContent),
+          };
+        })
+      );
+
+      const nextContents: Record<string, string> = {};
+      const nextMetadataById: Record<string, NoteMetadata> = {};
+      let unreadableCount = 0;
+
+      settledDocuments.forEach((result, index) => {
+        const note = flatNotes[index];
+        if (!note) {
+          return;
+        }
+
+        if (result.status === "fulfilled") {
+          nextContents[note.id] = result.value.document.body;
+          nextMetadataById[note.id] = normalizeNoteMetadata({
+            ...result.value.document.metadata,
+            updatedAt: note.updatedAt,
+          });
+          return;
+        }
+
+        console.error(result.reason);
+        nextContents[note.id] = "";
+        nextMetadataById[note.id] = createEmptyNoteMetadata();
+        unreadableCount += 1;
+      });
+
       setNotes(entries);
       setTrashEntries(trash);
       setSelectedFolderPath((current) => {
@@ -294,37 +412,46 @@ function App() {
       });
 
       const existingIds = collectNoteIds(entries);
-      setNoteContents((current) =>
-        removeRecordKeys(
-          current,
-          new Set(Object.keys(current).filter((key) => !existingIds.has(key)))
-        )
+      const removedIds = new Set<string>(
+        [
+          ...Object.keys(noteContents),
+          ...Object.keys(noteMetadataById),
+          ...Object.keys(noteViewModes),
+          ...Array.from(loadingRef.current),
+        ].filter((key) => !existingIds.has(key))
       );
-      setNoteViewModes((current) =>
-        removeRecordKeys(
-          current,
-          new Set(Object.keys(current).filter((key) => !existingIds.has(key)))
-        )
-      );
-      setLoadingNoteIds((current) =>
-        removeSetValues(
-          current,
-          new Set(Array.from(current).filter((key) => !existingIds.has(key)))
-        )
-      );
+
+      if (removedIds.size > 0) {
+        setNoteContents((current) => removeRecordKeys(current, removedIds));
+        setNoteMetadataById((current) => removeRecordKeys(current, removedIds));
+        setNoteViewModes((current) => removeRecordKeys(current, removedIds));
+        setLoadingNoteIds((current) => removeSetValues(current, removedIds));
+      }
+
+      setNoteContents(nextContents);
+      setNoteMetadataById(nextMetadataById);
+      setLoadingNoteIds(new Set());
+
       recordStartupEvent("vault.refresh.succeeded", {
         noteCount: existingIds.size,
         trashCount: trash.length,
       });
+
+      if (unreadableCount > 0) {
+        setErrorMessage(
+          `${String(unreadableCount)} note${unreadableCount === 1 ? " was" : "s were"} unreadable during load.`
+        );
+      }
     } catch (error) {
       console.error(error);
       const message = error instanceof Error ? error.message : String(error);
       markStartupError("vault.refresh.failed", { message });
       setErrorMessage("Unable to load notes. Check folder permissions.");
+      setLoadingNoteIds(new Set());
     } finally {
       setIsLoading(false);
     }
-  }, [notesDirectory]);
+  }, [noteContents, noteMetadataById, noteViewModes, notesDirectory]);
 
   useEffect(() => {
     if (!didRecordMountRef.current) {
@@ -375,6 +502,13 @@ function App() {
     window.localStorage.setItem(SIDEBAR_WIDTH_KEY, sidebarWidth.toString());
   }, [sidebarCollapsed, sidebarWidth]);
 
+  useEffect(() => {
+    const availableTagKeys = new Set(availableTags.map((tag) => tag.toLocaleLowerCase()));
+    setSelectedTagFilters((current) =>
+      current.filter((tag) => availableTagKeys.has(normalizeTag(tag).toLocaleLowerCase()))
+    );
+  }, [availableTags]);
+
   const handleOpenVault = async () => {
     setErrorMessage(null);
     try {
@@ -382,8 +516,10 @@ function App() {
       if (directory) {
         setNotesDirectory(directory);
         setSelectedFolderPath(null);
+        setSelectedTagFilters([]);
         dispatchPane({ type: "reset" });
         setNoteContents({});
+        setNoteMetadataById({});
         setNoteViewModes({});
         setLoadingNoteIds(new Set());
       }
@@ -399,15 +535,28 @@ function App() {
       const notePath = note.path;
       const noteTitle = note.title;
 
-      if (Object.prototype.hasOwnProperty.call(noteContents, noteId)) return;
+      if (
+        Object.prototype.hasOwnProperty.call(noteContents, noteId) &&
+        Object.prototype.hasOwnProperty.call(noteMetadataById, noteId)
+      ) {
+        return;
+      }
       if (loadingRef.current.has(noteId)) return;
 
       loadingRef.current.add(noteId);
       setLoadingNoteIds((current) => new Set(current).add(noteId));
 
       try {
-        const content = await readNote(notePath);
-        setNoteContents((current) => ({ ...current, [noteId]: content }));
+        const rawContent = await readNote(notePath);
+        const document = parseNoteDocument(rawContent);
+        setNoteContents((current) => ({ ...current, [noteId]: document.body }));
+        setNoteMetadataById((current) => ({
+          ...current,
+          [noteId]: normalizeNoteMetadata({
+            ...document.metadata,
+            updatedAt: current[noteId]?.updatedAt ?? note.updatedAt,
+          }),
+        }));
       } catch (error) {
         console.error(error);
         setErrorMessage(`Unable to read "${noteTitle}". The file may be inaccessible.`);
@@ -420,7 +569,7 @@ function App() {
         });
       }
     },
-    [noteContents]
+    [noteContents, noteMetadataById]
   );
 
   const openNoteInPane = useCallback(
@@ -447,7 +596,6 @@ function App() {
     try {
       const created = await createNote(title, selectedFolderPath);
       await refreshVaultState();
-      setNoteContents((current) => ({ ...current, [created.id]: "" }));
       await openNoteInPane(created, "active");
     } catch (error) {
       console.error(error);
@@ -574,12 +722,29 @@ function App() {
     }
   };
 
-  const handleAutoSave = async (noteId: string, nextValue: string) => {
+  const handleAutoSave = async (noteId: string, nextDocument: NoteDocument) => {
     const note = getNoteById(noteId);
     if (!note) return;
 
+    const updatedMetadata = normalizeNoteMetadata({
+      ...nextDocument.metadata,
+      updatedAt: new Date().toISOString(),
+    });
+    const serialized = serializeNoteDocument({
+      body: nextDocument.body,
+      metadata: updatedMetadata,
+    });
+
     try {
-      await updateNote(note.path, nextValue);
+      await updateNote(note.path, serialized);
+      setNoteContents((current) => ({
+        ...current,
+        [noteId]: nextDocument.body,
+      }));
+      setNoteMetadataById((current) => ({
+        ...current,
+        [noteId]: updatedMetadata,
+      }));
     } catch (error) {
       console.error(error);
       setErrorMessage("Auto-save failed. Check disk access.");
@@ -594,6 +759,16 @@ function App() {
 
       return { ...current, [noteId]: nextValue };
     });
+  };
+
+  const handleChangeNoteMetadata = (noteId: string, metadata: NoteMetadata) => {
+    setNoteMetadataById((current) => ({
+      ...current,
+      [noteId]: normalizeNoteMetadata({
+        ...metadata,
+        updatedAt: current[noteId]?.updatedAt,
+      }),
+    }));
   };
 
   const handleClosePane = (paneId: string) => {
@@ -643,10 +818,12 @@ function App() {
         <NoteListErrorBoundary>
           <NoteList
             directoryPath={notesDirectory}
-            notes={notes}
+            notes={notesWithMetadata}
             trashEntries={trashEntries}
             selectedNoteId={activeNoteId}
             selectedFolderPath={selectedFolderPath}
+            availableTags={availableTags}
+            selectedTags={selectedTagFilters}
             onOpenVault={() => {
               void handleOpenVault();
             }}
@@ -688,6 +865,21 @@ function App() {
             }}
             onPermanentlyDeleteTrashEntry={(entry) => {
               void handlePermanentDeleteTrashEntry(entry);
+            }}
+            onToggleTagFilter={(tag) => {
+              setSelectedTagFilters((current) => {
+                const normalized = normalizeTag(tag).toLocaleLowerCase();
+                return current.some(
+                  (entry) => normalizeTag(entry).toLocaleLowerCase() === normalized
+                )
+                  ? current.filter(
+                      (entry) => normalizeTag(entry).toLocaleLowerCase() !== normalized
+                    )
+                  : [...current, tag];
+              });
+            }}
+            onClearTagFilters={() => {
+              setSelectedTagFilters([]);
             }}
             errorMessage={errorMessage}
           />
@@ -736,19 +928,23 @@ function App() {
             getNoteViewMode={getNoteViewMode}
             noteContents={noteContents}
             loadingNoteIds={loadingNoteIds}
+            availableTags={availableTags}
             onActivatePane={(paneId) => {
               dispatchPane({ type: "activate-pane", paneId });
             }}
             onClosePane={handleClosePane}
             onToggleNoteViewMode={toggleNoteViewMode}
             onChangeNote={handleChangeNoteContent}
+            onChangeNoteMetadata={handleChangeNoteMetadata}
             onAutoSaveNote={handleAutoSave}
           />
         ) : (
           <NoteEditor
             note={null}
             value=""
+            availableTags={availableTags}
             onChange={() => {}}
+            onMetadataChange={() => {}}
             onAutoSave={async () => {}}
             isLoading={false}
             viewMode="edit"

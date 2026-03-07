@@ -1,4 +1,13 @@
-import { type ReactNode, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import {
+  type ChangeEvent,
+  type KeyboardEvent,
+  type ReactNode,
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
 import { defaultKeymap } from "@codemirror/commands";
 import { markdown } from "@codemirror/lang-markdown";
 import { lintGutter } from "@codemirror/lint";
@@ -7,7 +16,6 @@ import { EditorView, keymap, placeholder } from "@codemirror/view";
 import { GFM } from "@lezer/markdown";
 import { checkboxPlugin, checkboxToggleFacet } from "../codemirror/checkboxPlugin";
 import { markdownDecoratorPlugin, markdownTheme } from "../codemirror/markdownDecorations";
-import { MarkdownPreview } from "./MarkdownPreview";
 import { spellLinter } from "../editor/spellLinter";
 import { toggleNthTaskMarker } from "../editor/taskList";
 import {
@@ -23,17 +31,42 @@ import {
 } from "../editor/undoRedo";
 import { createSaveController } from "../state/saveController";
 import type { NoteViewMode } from "../types/editor";
-import type { Note } from "../types/notes";
+import type { Note, NoteDocument, NoteMetadata } from "../types/notes";
+import { createEmptyNoteMetadata, normalizeNoteMetadata, normalizeTag } from "../utils/frontmatter";
+import { MarkdownPreview } from "./MarkdownPreview";
 
 interface NoteEditorProps {
   note: Note | null;
   value: string;
+  availableTags: string[];
   onChange: (value: string) => void;
-  onAutoSave: (value: string) => Promise<void>;
+  onMetadataChange: (metadata: NoteMetadata) => void;
+  onAutoSave: (value: NoteDocument) => Promise<void>;
   toolbarActions?: ReactNode;
   isActive?: boolean;
   viewMode?: NoteViewMode;
   isLoading?: boolean;
+}
+
+function createDocumentSnapshot(body: string, metadata: NoteMetadata): string {
+  return JSON.stringify({
+    body,
+    subject: metadata.subject ?? "",
+    tags: metadata.tags,
+  });
+}
+
+function formatUpdatedAt(updatedAt?: string): string | null {
+  if (!updatedAt) {
+    return null;
+  }
+
+  const parsed = new Date(updatedAt);
+  if (Number.isNaN(parsed.getTime())) {
+    return null;
+  }
+
+  return parsed.toLocaleString();
 }
 
 interface SearchMatch {
@@ -67,7 +100,9 @@ function findMatches(value: string, query: string, matchCase: boolean): SearchMa
 export function NoteEditor({
   note,
   value,
+  availableTags,
   onChange,
+  onMetadataChange,
   onAutoSave,
   toolbarActions,
   isActive = false,
@@ -77,15 +112,21 @@ export function NoteEditor({
   const containerRef = useRef<HTMLDivElement>(null);
   const findInputRef = useRef<HTMLInputElement>(null);
   const viewRef = useRef<EditorView | null>(null);
-  const lastSavedRef = useRef<string>(value);
   const valueRef = useRef(value);
+  const metadataRef = useRef<NoteMetadata>(createEmptyNoteMetadata());
+  const lastSavedRef = useRef(createDocumentSnapshot(value, createEmptyNoteMetadata()));
   const onChangeRef = useRef(onChange);
+  const onMetadataChangeRef = useRef(onMetadataChange);
   const onAutoSaveRef = useRef(onAutoSave);
   const saveControllerRef = useRef(createSaveController());
   const undoRedoRef = useRef(createUndoRedoState());
   const undoHistoryByNoteRef = useRef<Map<string, UndoRedoHistorySnapshot>>(new Map());
   const activeHistoryKeyRef = useRef<string | null>(note?.path ?? note?.id ?? null);
   const suppressHistoryRef = useRef(false);
+  const [tagDraft, setTagDraft] = useState<{ noteId: string | null; value: string }>({
+    noteId: note?.id ?? null,
+    value: "",
+  });
   const openFindRef = useRef<(showReplace: boolean) => void>(() => {});
   const findNextRef = useRef<() => void>(() => {});
   const findPrevRef = useRef<() => void>(() => {});
@@ -97,10 +138,34 @@ export function NoteEditor({
   const [matchCase, setMatchCase] = useState(false);
   const [activeMatchIndex, setActiveMatchIndex] = useState(0);
 
+  const noteMetadata = useMemo(
+    () =>
+      note
+        ? normalizeNoteMetadata({
+            subject: note.subject,
+            tags: note.tags,
+            updatedAt: note.updatedAt,
+          })
+        : createEmptyNoteMetadata(),
+    [note]
+  );
+
+  const documentSnapshot = useMemo(
+    () => createDocumentSnapshot(value, noteMetadata),
+    [noteMetadata, value]
+  );
+  const activeNoteId = note?.id ?? null;
+  const tagInput = tagDraft.noteId === activeNoteId ? tagDraft.value : "";
   const isPreviewMode = viewMode === "preview";
   const canToggleCheckboxes = Boolean(note) && !isLoading && !isPreviewMode;
   const canTogglePreviewTasks = Boolean(note) && !isLoading;
   const isEditable = canToggleCheckboxes;
+  const isMetadataEditable = Boolean(note) && !isLoading;
+  const updatedAtLabel = note ? formatUpdatedAt(note.updatedAt) : null;
+  const suggestedTags = useMemo(() => {
+    const assigned = new Set(noteMetadata.tags.map((tag) => normalizeTag(tag).toLocaleLowerCase()));
+    return availableTags.filter((tag) => !assigned.has(normalizeTag(tag).toLocaleLowerCase()));
+  }, [availableTags, noteMetadata.tags]);
   const matches = useMemo(
     () => findMatches(value, findQuery, matchCase),
     [findQuery, matchCase, value]
@@ -239,8 +304,16 @@ export function NoteEditor({
   }, [onChange]);
 
   useEffect(() => {
+    onMetadataChangeRef.current = onMetadataChange;
+  }, [onMetadataChange]);
+
+  useEffect(() => {
     onAutoSaveRef.current = onAutoSave;
   }, [onAutoSave]);
+
+  useEffect(() => {
+    metadataRef.current = noteMetadata;
+  }, [noteMetadata]);
 
   useEffect(() => {
     if (!isFindOpen) {
@@ -420,9 +493,9 @@ export function NoteEditor({
 
   useEffect(() => {
     if (note?.path) {
-      lastSavedRef.current = valueRef.current;
+      lastSavedRef.current = documentSnapshot;
     }
-  }, [note?.path]);
+  }, [documentSnapshot, note?.path]);
 
   useEffect(() => {
     const nextKey = note?.path ?? note?.id ?? null;
@@ -475,14 +548,18 @@ export function NoteEditor({
 
   useEffect(() => {
     if (!note || isLoading) return;
-    if (value === lastSavedRef.current) return;
+    if (documentSnapshot === lastSavedRef.current) return;
 
-    const pendingValue = value;
+    const pendingDocument: NoteDocument = {
+      body: value,
+      metadata: noteMetadata,
+    };
+    const pendingSnapshot = documentSnapshot;
     const handle = window.setTimeout(() => {
       void saveControllerRef.current
         .save(
-          pendingValue,
-          async (nextValue) => onAutoSaveRef.current(nextValue),
+          pendingSnapshot,
+          async () => onAutoSaveRef.current(pendingDocument),
           (committedValue) => {
             lastSavedRef.current = committedValue;
           }
@@ -495,7 +572,16 @@ export function NoteEditor({
     return () => {
       window.clearTimeout(handle);
     };
-  }, [isLoading, note, value]);
+  }, [documentSnapshot, isLoading, note, noteMetadata, value]);
+
+  const emitMetadataChange = (nextMetadata: NoteMetadata) => {
+    metadataRef.current = nextMetadata;
+    onMetadataChangeRef.current(nextMetadata);
+  };
+
+  const clearTagDraft = () => {
+    setTagDraft({ noteId: activeNoteId, value: "" });
+  };
 
   const handleTogglePreviewTask = (taskIndex: number) => {
     if (!canTogglePreviewTasks) {
@@ -517,10 +603,16 @@ export function NoteEditor({
     valueRef.current = nextValue;
     onChangeRef.current(nextValue);
 
+    const pendingDocument: NoteDocument = {
+      body: nextValue,
+      metadata: metadataRef.current,
+    };
+    const pendingSnapshot = createDocumentSnapshot(nextValue, metadataRef.current);
+
     void saveControllerRef.current
       .save(
-        nextValue,
-        async (pendingValue) => onAutoSaveRef.current(pendingValue),
+        pendingSnapshot,
+        async () => onAutoSaveRef.current(pendingDocument),
         (committedValue) => {
           lastSavedRef.current = committedValue;
         }
@@ -528,6 +620,49 @@ export function NoteEditor({
       .catch(() => {
         // Save status handled upstream.
       });
+  };
+
+  const commitTag = (rawTag: string) => {
+    if (!isMetadataEditable) {
+      return;
+    }
+
+    const nextTag = normalizeTag(rawTag);
+    if (!nextTag) {
+      clearTagDraft();
+      return;
+    }
+
+    if (
+      metadataRef.current.tags.some(
+        (tag) => normalizeTag(tag).toLocaleLowerCase() === nextTag.toLocaleLowerCase()
+      )
+    ) {
+      clearTagDraft();
+      return;
+    }
+
+    emitMetadataChange({
+      ...metadataRef.current,
+      tags: [...metadataRef.current.tags, nextTag],
+    });
+    clearTagDraft();
+  };
+
+  const handleTagInputKeyDown = (event: KeyboardEvent<HTMLInputElement>) => {
+    if (event.key !== "Enter" && event.key !== ",") {
+      return;
+    }
+
+    event.preventDefault();
+    commitTag(tagInput);
+  };
+
+  const handleSubjectChange = (event: ChangeEvent<HTMLInputElement>) => {
+    emitMetadataChange({
+      ...metadataRef.current,
+      subject: event.target.value,
+    });
   };
 
   const previewContent = !note ? (
@@ -544,6 +679,11 @@ export function NoteEditor({
         <div>
           <p className="note-editor__eyebrow">Editor</p>
           <h3 className="note-editor__title">{note ? note.title : "No note selected"}</h3>
+          <p className="note-editor__meta">
+            {updatedAtLabel
+              ? `Updated ${updatedAtLabel}`
+              : "Frontmatter is added only when metadata is set."}
+          </p>
         </div>
         <div className="note-editor__actions">
           {note && !isPreviewMode && !isLoading && (
@@ -571,6 +711,84 @@ export function NoteEditor({
           {toolbarActions}
         </div>
       </div>
+      {note && (
+        <div className="note-editor__properties">
+          <label className="note-editor__field">
+            <span className="note-editor__field-label">Subject</span>
+            <input
+              className="input note-editor__input"
+              type="text"
+              value={noteMetadata.subject ?? ""}
+              onChange={handleSubjectChange}
+              placeholder="Add a subject for this note"
+              disabled={!isMetadataEditable}
+            />
+          </label>
+
+          <div className="note-editor__field">
+            <span className="note-editor__field-label">Tags</span>
+            <div className="note-editor__tag-editor">
+              <div className="note-editor__tag-list">
+                {noteMetadata.tags.map((tag) => (
+                  <span key={tag} className="note-editor__tag-chip">
+                    <span>#{tag}</span>
+                    <button
+                      className="note-editor__tag-remove"
+                      type="button"
+                      onClick={() => {
+                        emitMetadataChange({
+                          ...metadataRef.current,
+                          tags: metadataRef.current.tags.filter((entry) => entry !== tag),
+                        });
+                      }}
+                      disabled={!isMetadataEditable}
+                      aria-label={`Remove ${tag}`}
+                    >
+                      x
+                    </button>
+                  </span>
+                ))}
+                <input
+                  className="note-editor__tag-input"
+                  type="text"
+                  value={tagInput}
+                  onChange={(event) => {
+                    setTagDraft({ noteId: activeNoteId, value: event.target.value });
+                  }}
+                  onKeyDown={handleTagInputKeyDown}
+                  onBlur={() => {
+                    if (tagInput.trim()) {
+                      commitTag(tagInput);
+                    }
+                  }}
+                  placeholder={
+                    noteMetadata.tags.length === 0 ? "Add a tag and press Enter" : "Add tag"
+                  }
+                  disabled={!isMetadataEditable}
+                />
+              </div>
+            </div>
+            {suggestedTags.length > 0 && (
+              <div className="note-editor__tag-options">
+                {suggestedTags.map((tag) => (
+                  <button
+                    key={tag}
+                    className="note-editor__tag-option"
+                    type="button"
+                    onClick={() => {
+                      commitTag(tag);
+                    }}
+                    disabled={!isMetadataEditable}
+                  >
+                    #{tag}
+                  </button>
+                ))}
+              </div>
+            )}
+          </div>
+        </div>
+      )}
+
       {isFindOpen && !isPreviewMode && (
         <div className="note-editor__findbar">
           <div className="note-editor__find-row">
