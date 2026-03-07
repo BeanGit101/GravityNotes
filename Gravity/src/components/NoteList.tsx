@@ -154,6 +154,8 @@ function isPathWithin(path: string | null, ancestorPath: string): boolean {
     path.startsWith(`${ancestorPath}\\`) ||
     path.startsWith(`${ancestorPath}/`)
   );
+}
+
 export function expandFoldersForNoteSelection(
   items: FileSystemItem[],
   expandedFolders: Set<string>,
