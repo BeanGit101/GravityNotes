@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState, type CSSProperties, type FormEvent } from "react";
+import { useEffect, useMemo, useState, useRef, type CSSProperties, type FormEvent } from "react";
 import { buildFilenameSearchResults } from "../services/notesService";
 import type { FileSystemItem, FolderItem, Note, TrashEntry } from "../types/notes";
 
@@ -79,7 +79,8 @@ function collectFolderPaths(items: FileSystemItem[]): Set<string> {
   return folderPaths;
 }
 
-function findFolderByPath(items: FileSystemItem[], path: string): FolderItem | null {
+function findFolderByPath(items: FileSystemItem[], path: string | null): FolderItem | null {
+  if (!path) return null;
   for (const item of items) {
     if (item.type === "folder") {
       if (item.path === path) {
@@ -224,6 +225,7 @@ export function NoteList({
   const [newFolderName, setNewFolderName] = useState("");
   const [searchQuery, setSearchQuery] = useState("");
   const [expandedFolders, setExpandedFolders] = useState<Set<string>>(() => new Set());
+  const [autoExpandedFolders, setAutoExpandedFolders] = useState<Set<string>>(() => new Set());
   const [showTrash, setShowTrash] = useState(true);
   const [contextMenu, setContextMenu] = useState<{
     target: ContextTarget;
@@ -243,10 +245,14 @@ export function NoteList({
     () => buildFilenameSearchResults(notes, searchQuery, directoryPath),
     [directoryPath, notes, searchQuery]
   );
-  const effectiveExpandedFolders = useMemo(
-    () => pruneExpandedFolders(expandedFolders, notes),
-    [expandedFolders, notes]
-  );
+
+  // effectiveExpandedFolders = pruned user-expanded folders merged with auto-expanded folders
+  const effectiveExpandedFolders = useMemo(() => {
+    const pruned = pruneExpandedFolders(expandedFolders, notes);
+    const merged = new Set(pruned);
+    autoExpandedFolders.forEach((p) => merged.add(p));
+    return merged;
+  }, [expandedFolders, notes, autoExpandedFolders]);
 
   const selectedFolderLabel = useMemo(() => {
     if (!selectedFolderPath) {
@@ -270,46 +276,39 @@ export function NoteList({
     setNewFolderName("");
   };
 
+  // When notes or expandedFolders change ensure state is pruned to valid folder paths.
   useEffect(() => {
     const prunedFolders = pruneExpandedFolders(expandedFolders, notes);
     if (setsEqual(prunedFolders, expandedFolders)) {
       return;
     }
-    const match = findFolderByPath(notes, selectedFolderPath);
-    return match ? toRelativePath(directoryPath, match.path) : "Selected folder";
-  }, [directoryPath, notes, selectedFolderPath]);
-
     let cancelled = false;
     queueMicrotask(() => {
       if (!cancelled) {
         setExpandedFolders(prunedFolders);
       }
     });
-
     return () => {
       cancelled = true;
     };
   }, [expandedFolders, notes]);
 
+  // Compute auto-expanded folders for the selected note (so the note will be visible)
   useEffect(() => {
     if (!selectedNoteId) {
       lastAutoExpandedNoteIdRef.current = null;
+      setAutoExpandedFolders(new Set());
       return;
     }
 
-  const mergedExpandedFolders = useMemo(() => {
-    const available = new Set(
-      folderOptions.map((option) => option.path).filter(Boolean) as string[]
-    );
-    const next = new Set<string>();
-    expandedFolders.forEach((path) => {
-      if (available.has(path)) {
-        next.add(path);
-      }
-    });
-    autoExpandedFolders.forEach((path) => next.add(path));
-    return next;
-  }, [autoExpandedFolders, expandedFolders, folderOptions]);
+    if (lastAutoExpandedNoteIdRef.current === selectedNoteId) {
+      return;
+    }
+
+    const next = expandFoldersForNoteSelection(notes, new Set<string>(), selectedNoteId);
+    setAutoExpandedFolders(next);
+    lastAutoExpandedNoteIdRef.current = selectedNoteId;
+  }, [selectedNoteId, notes, expandedFolders]);
 
   useEffect(() => {
     if (!contextMenu) return;
@@ -549,72 +548,9 @@ export function NoteList({
           </li>
         );
       }
-
-      return (
-        <li key={item.id} className="note-list__item">
-          <div
-            className={`note-list__row note-list__row--file ${
-              selectedNoteId === item.id ? "note-list__row--active" : ""
-            }`}
-            style={depthStyle}
-            onContextMenu={(event) => {
-              event.preventDefault();
-              setContextMenu({
-                note: item,
-                x: event.clientX,
-                y: event.clientY,
-              });
-            }}
-          >
-            <button
-              className="note-list__select"
-              type="button"
-              onClick={() => {
-                const nextExpandedFolders = expandFoldersForNoteSelection(
-                  notes,
-                  effectiveExpandedFolders,
-                  item.id
-                );
-                setExpandedFolders(nextExpandedFolders);
-                lastAutoExpandedNoteIdRef.current = item.id;
-                onSelectNote(item);
-              }}
-            >
-              {item.title}
-            </button>
-            <button
-              className="note-list__split"
-              type="button"
-              onClick={(event) => {
-                event.stopPropagation();
-                const nextExpandedFolders = expandFoldersForNoteSelection(
-                  notes,
-                  effectiveExpandedFolders,
-                  item.id
-                );
-                setExpandedFolders(nextExpandedFolders);
-                lastAutoExpandedNoteIdRef.current = item.id;
-                onOpenInNewPane(item);
-              }}
-              aria-label={`Open ${item.title} in a new pane`}
-            >
-              Split
-            </button>
-            <button
-              className="note-list__delete"
-              type="button"
-              onClick={() => {
-                onDeleteNote(item);
-              }}
-              aria-label={`Delete ${item.title}`}
-            >
-              Delete
-            </button>
-          </div>
-        </li>
-      );
-    });
-
+      
+  return renderNoteRow(item as Note, depth);
+      
   return (
     <div className="note-list">
       <div className="note-list__header">
