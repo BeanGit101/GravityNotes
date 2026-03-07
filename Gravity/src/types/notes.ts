@@ -38,16 +38,6 @@ export interface TrashEntry {
   deletedAt: number;
 }
 
-export type NoteMetadataValue =
-  | string
-  | number
-  | boolean
-  | null
-  | NoteMetadataValue[]
-  | { [key: string]: NoteMetadataValue };
-
-export type NoteMetadata = Record<string, NoteMetadataValue>;
-
 export interface TemplateItem {
   id: string;
   name: string;

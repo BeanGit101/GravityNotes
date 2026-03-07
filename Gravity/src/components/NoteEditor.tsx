@@ -2,12 +2,12 @@ import {
   type ChangeEvent,
   type KeyboardEvent,
   type ReactNode,
+  useCallback,
   useEffect,
   useMemo,
   useRef,
   useState,
 } from "react";
-import { type ReactNode, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { defaultKeymap } from "@codemirror/commands";
 import { markdown } from "@codemirror/lang-markdown";
 import { lintGutter } from "@codemirror/lint";
@@ -314,6 +314,8 @@ export function NoteEditor({
   useEffect(() => {
     metadataRef.current = noteMetadata;
   }, [noteMetadata]);
+
+  useEffect(() => {
     if (!isFindOpen) {
       return;
     }
@@ -601,10 +603,16 @@ export function NoteEditor({
     valueRef.current = nextValue;
     onChangeRef.current(nextValue);
 
+    const pendingDocument: NoteDocument = {
+      body: nextValue,
+      metadata: metadataRef.current,
+    };
+    const pendingSnapshot = createDocumentSnapshot(nextValue, metadataRef.current);
+
     void saveControllerRef.current
       .save(
-        nextValue,
-        async (pendingValue) => onAutoSaveRef.current(pendingValue),
+        pendingSnapshot,
+        async () => onAutoSaveRef.current(pendingDocument),
         (committedValue) => {
           lastSavedRef.current = committedValue;
         }

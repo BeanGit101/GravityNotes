@@ -869,7 +869,9 @@ function App() {
             onToggleTagFilter={(tag) => {
               setSelectedTagFilters((current) => {
                 const normalized = normalizeTag(tag).toLocaleLowerCase();
-                return current.some((entry) => normalizeTag(entry).toLocaleLowerCase() === normalized)
+                return current.some(
+                  (entry) => normalizeTag(entry).toLocaleLowerCase() === normalized
+                )
                   ? current.filter(
                       (entry) => normalizeTag(entry).toLocaleLowerCase() !== normalized
                     )

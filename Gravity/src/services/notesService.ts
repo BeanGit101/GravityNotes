@@ -123,7 +123,7 @@ export function buildFilenameSearchResults(
         const relativePath = buildRelativePath(vaultPath, entry.path);
         const folderLabel = folderPath ? buildRelativePath(vaultPath, folderPath) : "Vault root";
         results.push({
-          note: { id: entry.id, title: entry.title, path: entry.path },
+          note: normalizeNote(entry),
           folderPath,
           folderLabel,
           relativePath,

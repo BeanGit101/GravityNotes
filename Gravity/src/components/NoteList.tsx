@@ -1,6 +1,3 @@
-import { useEffect, useMemo, useState, type CSSProperties, type FormEvent } from "react";
-import type { FileSystemItem, FolderItem, Note } from "../types/notes";
-import { normalizeTag } from "../utils/frontmatter";
 import {
   useCallback,
   useEffect,
@@ -13,6 +10,7 @@ import {
 import { buildFilenameSearchResults } from "../services/notesService";
 import { recordStartupEvent } from "../state/startupDiagnostics";
 import type { FileSystemItem, FolderItem, Note, TrashEntry } from "../types/notes";
+import { normalizeTag } from "../utils/frontmatter";
 
 interface NoteListProps {
   directoryPath: string;
@@ -156,6 +154,8 @@ function filterNotesTree(items: FileSystemItem[], selectedTags: string[]): FileS
   });
 
   return filtered;
+}
+
 function toRelativePath(
   basePath: string | null | undefined,
   targetPath: string | null | undefined
@@ -289,51 +289,51 @@ export function NoteList({
 
   const filteredNotes = useMemo(() => filterNotesTree(notes, selectedTags), [notes, selectedTags]);
 
-const { totalNotes, folderNoteCounts } = useMemo(
-  () => buildNotesTreeStats(filteredNotes),
-  [filteredNotes]
-);
+  const { totalNotes, folderNoteCounts } = useMemo(
+    () => buildNotesTreeStats(filteredNotes),
+    [filteredNotes]
+  );
 
-const folderOptions = useMemo(
-  () => collectFolderOptions(notes, directoryPath),
-  [notes, directoryPath]
-);
+  const folderOptions = useMemo(
+    () => collectFolderOptions(notes, directoryPath),
+    [notes, directoryPath]
+  );
 
-const searchResults = useMemo(
-  () => buildFilenameSearchResults(filteredNotes, searchQuery, directoryPath),
-  [directoryPath, filteredNotes, searchQuery]
-);
+  const searchResults = useMemo(
+    () => buildFilenameSearchResults(filteredNotes, searchQuery, directoryPath),
+    [directoryPath, filteredNotes, searchQuery]
+  );
 
-const prunedExpandedFolders = useMemo(
-  () => pruneExpandedFolders(expandedFolders, filteredNotes),
-  [expandedFolders, filteredNotes]
-);
+  const prunedExpandedFolders = useMemo(
+    () => pruneExpandedFolders(expandedFolders, filteredNotes),
+    [expandedFolders, filteredNotes]
+  );
 
-const effectiveExpandedFolders = useMemo(
-  () => expandFoldersForNoteSelection(filteredNotes, prunedExpandedFolders, selectedNoteId),
-  [filteredNotes, prunedExpandedFolders, selectedNoteId]
-);
+  const effectiveExpandedFolders = useMemo(
+    () => expandFoldersForNoteSelection(filteredNotes, prunedExpandedFolders, selectedNoteId),
+    [filteredNotes, prunedExpandedFolders, selectedNoteId]
+  );
 
-const selectedFolderLabel = useMemo(() => {
-  if (!selectedFolderPath) {
-    return "Vault root";
-  }
-  const match = findFolderByPath(notes, selectedFolderPath);
-  return match?.name ?? "Selected folder";
-}, [notes, selectedFolderPath]);
-
-const closeContextMenu = useCallback(() => {
-  setContextMenu(null);
-}, []);
-
-const handleWindowKeyDown = useCallback(
-  (event: KeyboardEvent) => {
-    if (event.key === "Escape") {
-      closeContextMenu();
+  const selectedFolderLabel = useMemo(() => {
+    if (!selectedFolderPath) {
+      return "Vault root";
     }
-  },
-  [closeContextMenu]
-);
+    const match = findFolderByPath(notes, selectedFolderPath);
+    return match?.name ?? "Selected folder";
+  }, [notes, selectedFolderPath]);
+
+  const closeContextMenu = useCallback(() => {
+    setContextMenu(null);
+  }, []);
+
+  const handleWindowKeyDown = useCallback(
+    (event: KeyboardEvent) => {
+      if (event.key === "Escape") {
+        closeContextMenu();
+      }
+    },
+    [closeContextMenu]
+  );
 
   const handleCreate = (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
@@ -478,68 +478,68 @@ const handleWindowKeyDown = useCallback(
   };
 
   const renderNoteRow = (note: Note, depth: number, folderLabel?: string) => {
-  const depthStyle = { "--depth": depth } as CSSProperties;
-  const metadataLine =
-    note.subject || note.tags.length > 0
-      ? note.subject ?? note.tags.map((tag) => `#${tag}`).join(" ")
-      : folderLabel;
+    const depthStyle = { "--depth": depth } as CSSProperties;
+    const metadataLine =
+      note.subject || note.tags.length > 0
+        ? (note.subject ?? note.tags.map((tag) => `#${tag}`).join(" "))
+        : folderLabel;
 
-  return (
-    <li key={note.id} className="note-list__item">
-      <div
-        className={`note-list__row note-list__row--file ${
-          selectedNoteId === note.id ? "note-list__row--active" : ""
-        }`}
-        style={depthStyle}
-        onContextMenu={(event) => {
-          event.preventDefault();
-          setContextMenu({
-            target: { kind: "note", note },
-            x: event.clientX,
-            y: event.clientY,
-          });
-        }}
-      >
-        <button
-          className="note-list__select note-list__select--file"
-          type="button"
-          onClick={() => {
-            onSelectNote(note);
-          }}
-        >
-          <span className="note-list__file-title">{note.title}</span>
-          {metadataLine && <span className="note-list__file-meta">{metadataLine}</span>}
-        </button>
-        <button
-          className="note-list__split"
-          type="button"
-          onClick={(event) => {
-            event.stopPropagation();
-            openNoteInSplitPane(note);
-          }}
-          aria-label={`Open ${note.title} in a new pane`}
-        >
-          Split
-        </button>
-        <button
-          className="note-list__more"
-          type="button"
-          onClick={(event) => {
-            const rect = event.currentTarget.getBoundingClientRect();
+    return (
+      <li key={note.id} className="note-list__item">
+        <div
+          className={`note-list__row note-list__row--file ${
+            selectedNoteId === note.id ? "note-list__row--active" : ""
+          }`}
+          style={depthStyle}
+          onContextMenu={(event) => {
+            event.preventDefault();
             setContextMenu({
               target: { kind: "note", note },
-              x: rect.left,
-              y: rect.bottom + 4,
+              x: event.clientX,
+              y: event.clientY,
             });
           }}
-          aria-label={`Open actions for ${note.title}`}
         >
-          ...
-        </button>
-      </div>
-    </li>
-  );
-};
+          <button
+            className="note-list__select note-list__select--file"
+            type="button"
+            onClick={() => {
+              onSelectNote(note);
+            }}
+          >
+            <span className="note-list__file-title">{note.title}</span>
+            {metadataLine && <span className="note-list__file-meta">{metadataLine}</span>}
+          </button>
+          <button
+            className="note-list__split"
+            type="button"
+            onClick={(event) => {
+              event.stopPropagation();
+              openNoteInSplitPane(note);
+            }}
+            aria-label={`Open ${note.title} in a new pane`}
+          >
+            Split
+          </button>
+          <button
+            className="note-list__more"
+            type="button"
+            onClick={(event) => {
+              const rect = event.currentTarget.getBoundingClientRect();
+              setContextMenu({
+                target: { kind: "note", note },
+                x: rect.left,
+                y: rect.bottom + 4,
+              });
+            }}
+            aria-label={`Open actions for ${note.title}`}
+          >
+            ...
+          </button>
+        </div>
+      </li>
+    );
+  };
 
   const renderItems = (items: FileSystemItem[], depth = 0) =>
     items.map((item) => {
@@ -769,24 +769,18 @@ const handleWindowKeyDown = useCallback(
         directoryPath && (
           <ul className="note-list__items">
             {totalNotes === 0 && (
-              <li className="note-list__empty">No notes yet. Create the first one.</li>
+              <li className="note-list__empty">
+                {selectedTags.length > 0
+                  ? "No notes match the selected tags."
+                  : "No notes yet. Create the first one."}
+              </li>
             )}
-            {renderItems(notes)}
+            {renderItems(filteredNotes)}
           </ul>
         )
       )}
 
       {directoryPath && (
-        <ul className="note-list__items">
-          {totalNotes === 0 && (
-            <li className="note-list__empty">
-              {selectedTags.length > 0
-                ? "No notes match the selected tags."
-                : "No notes yet. Create the first one."}
-            </li>
-          )}
-          {renderItems(filteredNotes)}
-        </ul>
         <section className="note-list__trash">
           <button
             className="note-list__trash-toggle"
