@@ -1,13 +1,13 @@
-﻿import { Facet } from "@codemirror/state";
+import { Facet, RangeSetBuilder } from "@codemirror/state";
 import {
   Decoration,
   type DecorationSet,
   EditorView,
-  MatchDecorator,
   ViewPlugin,
   type ViewUpdate,
   WidgetType,
 } from "@codemirror/view";
+import { parseCheckboxes } from "../editor/checkboxParser";
 
 export const checkboxToggleFacet = Facet.define<boolean, boolean>({
   combine(values) {
@@ -20,6 +20,16 @@ export function getCheckboxToggleInsert(checked: boolean, canToggle: boolean): s
     return null;
   }
   return checked ? "[ ]" : "[x]";
+}
+
+function selectionIntersectsCheckbox(view: EditorView, from: number, to: number): boolean {
+  return view.state.selection.ranges.some((range) => {
+    if (range.empty) {
+      return range.from >= from && range.from <= to;
+    }
+
+    return range.from < to && range.to > from;
+  });
 }
 
 class CheckboxWidget extends WidgetType {
@@ -68,27 +78,45 @@ class CheckboxWidget extends WidgetType {
   }
 }
 
-const checkboxDecorator = new MatchDecorator({
-  regexp: /\[([ xX])]/g,
-  // CM6 intentionally suppresses decorations at the cursor position.
-  decoration: (match, view, pos) => {
-    const marker = match[1] ?? " ";
-    return Decoration.replace({
-      widget: new CheckboxWidget(marker.toLowerCase() === "x", pos, view),
+function buildCheckboxDecorations(view: EditorView): DecorationSet {
+  const builder = new RangeSetBuilder<Decoration>();
+  const checkboxes = parseCheckboxes(view.state.doc.toString());
+
+  for (const { from, to } of view.visibleRanges) {
+    checkboxes.forEach((checkbox) => {
+      if (checkbox.to < from || checkbox.from > to) {
+        return;
+      }
+
+      if (selectionIntersectsCheckbox(view, checkbox.from, checkbox.to)) {
+        return;
+      }
+
+      builder.add(
+        checkbox.from,
+        checkbox.to,
+        Decoration.replace({
+          widget: new CheckboxWidget(checkbox.checked, checkbox.from, view),
+        })
+      );
     });
-  },
-});
+  }
+
+  return builder.finish();
+}
 
 export const checkboxPlugin = ViewPlugin.fromClass(
   class {
     decorations: DecorationSet;
 
     constructor(view: EditorView) {
-      this.decorations = checkboxDecorator.createDeco(view);
+      this.decorations = buildCheckboxDecorations(view);
     }
 
     update(update: ViewUpdate): void {
-      this.decorations = checkboxDecorator.updateDeco(update, this.decorations);
+      if (update.docChanged || update.viewportChanged || update.selectionSet) {
+        this.decorations = buildCheckboxDecorations(update.view);
+      }
     }
   },
   {

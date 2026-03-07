@@ -53,6 +53,14 @@ const SIMPLE_MARKER_NODE_NAMES = new Set([
 const LINK_DESTINATION_NODE_NAMES = new Set(["URL", "LinkTitle"]);
 const LINK_MARKER_TEXT_TO_HIDE = new Set(["(", ")"]);
 
+type TableAlignment = "left" | "center" | "right" | null;
+
+interface ParsedTableBlock {
+  header: string[];
+  alignments: TableAlignment[];
+  rows: string[][];
+}
+
 class CodeBlockWidget extends WidgetType {
   constructor(
     readonly code: string,
@@ -105,6 +113,188 @@ class CodeBlockWidget extends WidgetType {
   }
 }
 
+class TableWidget extends WidgetType {
+  constructor(readonly source: string) {
+    super();
+  }
+
+  override toDOM(): HTMLElement {
+    const wrapper = document.createElement("div");
+    wrapper.className = "md-table-widget";
+
+    const parsedTable = parseTableBlock(this.source);
+    if (!parsedTable) {
+      wrapper.textContent = this.source;
+      return wrapper;
+    }
+
+    const table = document.createElement("table");
+    table.className = "markdown-preview__table";
+
+    const thead = document.createElement("thead");
+    thead.className = "markdown-preview__thead";
+
+    const headerRow = document.createElement("tr");
+    headerRow.className = "markdown-preview__row";
+
+    parsedTable.header.forEach((cell, index) => {
+      const th = document.createElement("th");
+      th.className = "markdown-preview__header-cell";
+      th.scope = "col";
+      applyTableAlignment(th, parsedTable.alignments[index] ?? null);
+      th.textContent = cell;
+      headerRow.appendChild(th);
+    });
+
+    thead.appendChild(headerRow);
+    table.appendChild(thead);
+
+    const tbody = document.createElement("tbody");
+    tbody.className = "markdown-preview__tbody";
+
+    parsedTable.rows.forEach((row) => {
+      const tr = document.createElement("tr");
+      tr.className = "markdown-preview__row";
+
+      row.forEach((cell, index) => {
+        const td = document.createElement("td");
+        td.className = "markdown-preview__cell";
+        applyTableAlignment(td, parsedTable.alignments[index] ?? null);
+        td.textContent = cell;
+        tr.appendChild(td);
+      });
+
+      tbody.appendChild(tr);
+    });
+
+    table.appendChild(tbody);
+    wrapper.appendChild(table);
+
+    return wrapper;
+  }
+
+  override eq(other: TableWidget): boolean {
+    return other.source === this.source;
+  }
+
+  override ignoreEvent(): boolean {
+    return false;
+  }
+}
+
+function applyTableAlignment(cell: HTMLTableCellElement, alignment: TableAlignment): void {
+  if (alignment) {
+    cell.style.textAlign = alignment;
+  }
+}
+
+function selectionIntersectsRange(state: EditorState, from: number, to: number): boolean {
+  return state.selection.ranges.some((range) => {
+    if (range.empty) {
+      return range.from >= from && range.from < to;
+    }
+
+    return range.from < to && range.to > from;
+  });
+}
+
+function stripQuotePrefix(line: string): string {
+  return line.replace(/^\s*(?:>\s*)+/, "");
+}
+
+function splitTableRow(line: string): string[] {
+  const normalizedLine = stripQuotePrefix(line).trim();
+  const content = normalizedLine.replace(/^\|/, "").replace(/\|$/, "");
+  const cells: string[] = [];
+  let current = "";
+  let escaped = false;
+
+  for (const char of content) {
+    if (escaped) {
+      current += char;
+      escaped = false;
+      continue;
+    }
+
+    if (char === "\\") {
+      escaped = true;
+      continue;
+    }
+
+    if (char === "|") {
+      cells.push(current.trim());
+      current = "";
+      continue;
+    }
+
+    current += char;
+  }
+
+  if (escaped) {
+    current += "\\";
+  }
+
+  cells.push(current.trim());
+  return cells;
+}
+
+function parseTableAlignment(cell: string): TableAlignment {
+  const normalizedCell = cell.replace(/\s+/g, "");
+  if (!/^:?-{3,}:?$/.test(normalizedCell)) {
+    return null;
+  }
+
+  const startsWithColon = normalizedCell.startsWith(":");
+  const endsWithColon = normalizedCell.endsWith(":");
+
+  if (startsWithColon && endsWithColon) {
+    return "center";
+  }
+
+  if (endsWithColon) {
+    return "right";
+  }
+
+  return "left";
+}
+
+function normalizeTableRow<T>(row: T[], columnCount: number, fillValue: T): T[] {
+  return Array.from({ length: columnCount }, (_, index) => row[index] ?? fillValue);
+}
+
+function parseTableBlock(source: string): ParsedTableBlock | null {
+  const lines = source
+    .split("\n")
+    .map((line) => line.replace(/\r$/, ""))
+    .filter((line) => line.trim().length > 0);
+
+  if (lines.length < 2) {
+    return null;
+  }
+
+  const header = splitTableRow(lines[0] ?? "");
+  const delimiter = splitTableRow(lines[1] ?? "");
+  const alignments = delimiter.map(parseTableAlignment);
+
+  if (alignments.length === 0 || alignments.some((alignment) => alignment === null)) {
+    return null;
+  }
+
+  const bodyRows = lines.slice(2).map((line) => splitTableRow(line));
+  const columnCount = Math.max(
+    header.length,
+    alignments.length,
+    0,
+    ...bodyRows.map((row) => row.length)
+  );
+
+  return {
+    header: normalizeTableRow(header, columnCount, ""),
+    alignments: normalizeTableRow(alignments, columnCount, null),
+    rows: bodyRows.map((row) => normalizeTableRow(row, columnCount, "")),
+  };
+}
+
 function isInsideFencedCode(node: SyntaxNodeRef): boolean {
   let current = node.node.parent;
   while (current) {
@@ -125,6 +315,21 @@ export function buildDecorations(state: EditorState): DecorationSet {
 
   tree.iterate({
     enter(node) {
+      if (node.name === "Table") {
+        const cursorInsideTable = selectionIntersectsRange(state, node.from, node.to);
+        if (!cursorInsideTable) {
+          ranges.push({
+            from: node.from,
+            to: node.to,
+            deco: Decoration.replace({
+              widget: new TableWidget(state.sliceDoc(node.from, node.to)),
+              block: true,
+            }),
+          });
+          return false;
+        }
+      }
+
       const deco = NODE_DECORATORS[node.name];
       if (deco) {
         ranges.push({ from: node.from, to: node.to, deco });

@@ -60,6 +60,7 @@ export function NoteEditor({
 
   const isPreviewMode = viewMode === "preview";
   const canToggleCheckboxes = Boolean(note) && !isLoading && !isPreviewMode;
+  const canTogglePreviewTasks = Boolean(note) && !isLoading;
   const isEditable = canToggleCheckboxes;
 
   const placeholderText = note
@@ -302,7 +303,7 @@ export function NoteEditor({
   }, [isLoading, note, value]);
 
   const handleTogglePreviewTask = (taskIndex: number) => {
-    if (!note || isLoading) {
+    if (!canTogglePreviewTasks) {
       return;
     }
 
@@ -312,8 +313,26 @@ export function NoteEditor({
       return;
     }
 
+    sealBurst(undoRedoRef.current);
+    const command = diffToCommand(currentValue, nextValue);
+    if (command) {
+      recordCommand(undoRedoRef.current, command);
+    }
+
     valueRef.current = nextValue;
     onChangeRef.current(nextValue);
+
+    void saveControllerRef.current
+      .save(
+        nextValue,
+        async (pendingValue) => onAutoSaveRef.current(pendingValue),
+        (committedValue) => {
+          lastSavedRef.current = committedValue;
+        }
+      )
+      .catch(() => {
+        // Save status handled upstream.
+      });
   };
 
   const previewContent = !note ? (
