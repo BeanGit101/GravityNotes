@@ -225,14 +225,12 @@ export function NoteList({
   const [newFolderName, setNewFolderName] = useState("");
   const [searchQuery, setSearchQuery] = useState("");
   const [expandedFolders, setExpandedFolders] = useState<Set<string>>(() => new Set());
-  const [autoExpandedFolders, setAutoExpandedFolders] = useState<Set<string>>(() => new Set());
   const [showTrash, setShowTrash] = useState(true);
   const [contextMenu, setContextMenu] = useState<{
     target: ContextTarget;
     x: number;
     y: number;
   } | null>(null);
-  const lastAutoExpandedNoteIdRef = useRef<string | null>(null);
   const canCreate = Boolean(directoryPath && newTitle.trim());
   const canCreateFolder = Boolean(directoryPath && newFolderName.trim());
 
@@ -248,11 +246,9 @@ export function NoteList({
 
   // effectiveExpandedFolders = pruned user-expanded folders merged with auto-expanded folders
   const effectiveExpandedFolders = useMemo(() => {
-    const pruned = pruneExpandedFolders(expandedFolders, notes);
-    const merged = new Set(pruned);
-    autoExpandedFolders.forEach((p) => merged.add(p));
-    return merged;
-  }, [expandedFolders, notes, autoExpandedFolders]);
+  const pruned = pruneExpandedFolders(expandedFolders, notes);
+  return expandFoldersForNoteSelection(notes, pruned, selectedNoteId);
+}, [expandedFolders, notes, selectedNoteId]);
 
   const selectedFolderLabel = useMemo(() => {
     if (!selectedFolderPath) {
@@ -292,23 +288,6 @@ export function NoteList({
       cancelled = true;
     };
   }, [expandedFolders, notes]);
-
-  // Compute auto-expanded folders for the selected note (so the note will be visible)
-  useEffect(() => {
-    if (!selectedNoteId) {
-      lastAutoExpandedNoteIdRef.current = null;
-      setAutoExpandedFolders(new Set());
-      return;
-    }
-
-    if (lastAutoExpandedNoteIdRef.current === selectedNoteId) {
-      return;
-    }
-
-    const next = expandFoldersForNoteSelection(notes, new Set<string>(), selectedNoteId);
-    setAutoExpandedFolders(next);
-    lastAutoExpandedNoteIdRef.current = selectedNoteId;
-  }, [selectedNoteId, notes, expandedFolders]);
 
   useEffect(() => {
     if (!contextMenu) return;
