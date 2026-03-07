@@ -1,6 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
 import { open } from "@tauri-apps/plugin-dialog";
-import type { FileSystemItem, FolderItem, Note } from "../types/notes";
+import type { FileSystemItem, FolderItem, Note, TrashRecord } from "../types/notes";
 
 const NOTES_DIRECTORY_KEY = "gravity.notesDirectory";
 
@@ -47,15 +47,16 @@ function flattenNotes(items: FileSystemItem[]): Note[] {
   const visit = (entries: FileSystemItem[]) => {
     entries.forEach((entry) => {
       if (entry.type === "file") {
-        notes.push({ id: entry.id, title: entry.title, path: entry.path });
-      } else {
-        visit(entry.children);
+        notes.push(entry);
+        return;
       }
+
+      visit(entry.children);
     });
   };
 
   visit(items);
-  notes.sort((a, b) => a.title.localeCompare(b.title));
+  notes.sort((left, right) => left.title.localeCompare(right.title));
   return notes;
 }
 
@@ -89,6 +90,11 @@ export async function listNotesWithFolders(): Promise<FileSystemItem[]> {
   return invoke<FileSystemItem[]>("list_vault_entries");
 }
 
+export async function listTrash(): Promise<TrashRecord[]> {
+  await ensureVaultSelected();
+  return invoke<TrashRecord[]>("list_trash_records");
+}
+
 export async function createNote(title: string, folderPath?: string | null): Promise<Note> {
   await ensureVaultSelected();
   return invoke<Note>("create_note", {
@@ -115,9 +121,32 @@ export async function updateNote(path: string, content: string): Promise<void> {
   await invoke("write_note", { path, content });
 }
 
-export async function deleteNote(path: string): Promise<void> {
+export async function trashEntry(path: string): Promise<TrashRecord> {
   await ensureVaultSelected();
-  await invoke("delete_note", { path });
+  return invoke<TrashRecord>("trash_entry", { path });
+}
+
+export async function restoreTrashItem(trashPath: string): Promise<string> {
+  await ensureVaultSelected();
+  return invoke<string>("restore_trashed_item", { trashPath });
+}
+
+export async function permanentlyDeleteTrashItem(trashPath: string): Promise<void> {
+  await ensureVaultSelected();
+  await invoke("permanently_delete_trashed_item", { trashPath });
+}
+
+export async function renameEntry(path: string, nextName: string): Promise<string> {
+  await ensureVaultSelected();
+  return invoke<string>("rename_entry", { path, nextName });
+}
+
+export async function moveEntry(path: string, folderPath?: string | null): Promise<string> {
+  await ensureVaultSelected();
+  return invoke<string>("move_entry", {
+    path,
+    folderPath: folderPath ?? null,
+  });
 }
 
 export function slugify(title: string): string {

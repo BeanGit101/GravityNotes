@@ -15,56 +15,100 @@ import { PaneContainer } from "./components/PaneContainer";
 import {
   createFolder,
   createNote,
-  deleteNote,
-  getNotesDirectory,
   listNotesWithFolders,
+  listTrash,
   readNote,
+  restoreTrashItem,
   selectNotesDirectory,
+  trashEntry,
   updateNote,
+  permanentlyDeleteTrashItem,
+  getNotesDirectory,
 } from "./services/notesService";
 import { initialPaneSessionState, paneSessionReducer, type OpenMode } from "./state/paneReducer";
 import type { NoteViewMode } from "./types/editor";
-import type { FileSystemItem, Note } from "./types/notes";
+import type {
+  FileSystemItem,
+  Note,
+  NoteSortMode,
+  SidebarPreferences,
+  SortDirection,
+  TrashRecord,
+} from "./types/notes";
+import { collectNotes, findFolderByPath } from "./utils/noteTree";
 
-function folderExists(items: FileSystemItem[], path: string): boolean {
-  for (const item of items) {
-    if (item.type === "folder") {
-      if (item.path === path) {
-        return true;
-      }
-      if (folderExists(item.children, path)) {
-        return true;
-      }
-    }
-  }
-  return false;
+const SIDEBAR_WIDTH_KEY = "gravity.sidebarWidth";
+const SIDEBAR_PREFERENCES_KEY = "gravity.sidebarPreferences";
+const SIDEBAR_MIN_WIDTH = 200;
+const SIDEBAR_COLLAPSED_WIDTH = 64;
+const SIDEBAR_MAX_RATIO = 0.6;
+
+const defaultSidebarPreferences: SidebarPreferences = {
+  searchText: "",
+  selectedTags: [],
+  sortMode: "updated",
+  sortDirection: "desc",
+};
+
+function isSortMode(value: unknown): value is NoteSortMode {
+  return value === "name" || value === "updated";
 }
 
-function collectNoteIds(items: FileSystemItem[]): Set<string> {
-  const ids = new Set<string>();
+function isSortDirection(value: unknown): value is SortDirection {
+  return value === "asc" || value === "desc";
+}
 
-  const visit = (entries: FileSystemItem[]) => {
-    entries.forEach((entry) => {
-      if (entry.type === "file") {
-        ids.add(entry.id);
-      } else {
-        visit(entry.children);
-      }
-    });
-  };
+function readSidebarPreferences(): SidebarPreferences {
+  if (typeof window === "undefined") {
+    return defaultSidebarPreferences;
+  }
 
-  visit(items);
-  return ids;
+  const stored = window.localStorage.getItem(SIDEBAR_PREFERENCES_KEY);
+  if (!stored) {
+    return defaultSidebarPreferences;
+  }
+
+  try {
+    const parsed = JSON.parse(stored) as Partial<SidebarPreferences>;
+    return {
+      searchText: typeof parsed.searchText === "string" ? parsed.searchText : "",
+      selectedTags: Array.isArray(parsed.selectedTags)
+        ? parsed.selectedTags.filter((tag): tag is string => typeof tag === "string")
+        : [],
+      sortMode: isSortMode(parsed.sortMode) ? parsed.sortMode : defaultSidebarPreferences.sortMode,
+      sortDirection: isSortDirection(parsed.sortDirection)
+        ? parsed.sortDirection
+        : defaultSidebarPreferences.sortDirection,
+    };
+  } catch {
+    return defaultSidebarPreferences;
+  }
+}
+
+function retainRecordEntries<T>(
+  record: Record<string, T>,
+  validIds: Set<string>
+): Record<string, T> {
+  return Object.fromEntries(Object.entries(record).filter(([key]) => validIds.has(key))) as Record<
+    string,
+    T
+  >;
+}
+
+function retainLoadingIds(current: Set<string>, validIds: Set<string>): Set<string> {
+  const next = new Set<string>();
+  current.forEach((noteId) => {
+    if (validIds.has(noteId)) {
+      next.add(noteId);
+    }
+  });
+  return next;
 }
 
 function App() {
-  const SIDEBAR_WIDTH_KEY = "gravity.sidebarWidth";
-  const SIDEBAR_MIN_WIDTH = 200;
-  const SIDEBAR_COLLAPSED_WIDTH = 64;
-  const SIDEBAR_MAX_RATIO = 0.6;
-
   const [notesDirectory, setNotesDirectory] = useState(getNotesDirectory());
   const [notes, setNotes] = useState<FileSystemItem[]>([]);
+  const [trashItems, setTrashItems] = useState<TrashRecord[]>([]);
   const [paneSession, dispatchPane] = useReducer(paneSessionReducer, initialPaneSessionState);
   const [noteContents, setNoteContents] = useState<Record<string, string>>({});
   const [noteViewModes, setNoteViewModes] = useState<Record<string, NoteViewMode>>({});
@@ -73,6 +117,9 @@ function App() {
   const [isLoading, setIsLoading] = useState(false);
   const [selectedFolderPath, setSelectedFolderPath] = useState<string | null>(null);
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
+  const [sidebarPreferences, setSidebarPreferences] = useState<SidebarPreferences>(() =>
+    readSidebarPreferences()
+  );
   const [sidebarWidth, setSidebarWidth] = useState(() => {
     if (typeof window === "undefined") {
       return 280;
@@ -92,17 +139,9 @@ function App() {
 
   const noteIndex = useMemo(() => {
     const map = new Map<string, Note>();
-    const walk = (items: FileSystemItem[]) => {
-      items.forEach((item) => {
-        if (item.type === "file") {
-          map.set(item.id, item);
-        } else {
-          walk(item.children);
-        }
-      });
-    };
-
-    walk(notes);
+    collectNotes(notes).forEach((note) => {
+      map.set(note.id, note);
+    });
     return map;
   }, [notes]);
 
@@ -113,6 +152,35 @@ function App() {
     [noteViewModes]
   );
 
+  const removeNotesFromState = useCallback((noteIds: string[]) => {
+    if (noteIds.length === 0) {
+      return;
+    }
+
+    const deletedIds = new Set(noteIds);
+    dispatchPane({ type: "remove-notes", noteIds });
+    setNoteContents((current) => {
+      return Object.fromEntries(
+        Object.entries(current).filter(([key]) => !deletedIds.has(key))
+      ) as Record<string, string>;
+    });
+    setNoteViewModes((current) => {
+      return Object.fromEntries(
+        Object.entries(current).filter(([key]) => !deletedIds.has(key))
+      ) as Record<string, NoteViewMode>;
+    });
+    setLoadingNoteIds((current) => {
+      const next = new Set(current);
+      noteIds.forEach((noteId) => {
+        next.delete(noteId);
+      });
+      return next;
+    });
+    loadingRef.current = new Set(
+      [...loadingRef.current].filter((noteId) => !deletedIds.has(noteId))
+    );
+  }, []);
+
   const toggleNoteViewMode = useCallback((noteId: string) => {
     setNoteViewModes((current) => {
       const nextMode = (current[noteId] ?? "edit") === "edit" ? "preview" : "edit";
@@ -120,13 +188,15 @@ function App() {
     });
   }, []);
 
-  const loadNotes = useCallback(async () => {
+  const loadVaultData = useCallback(async () => {
     if (!notesDirectory) {
       setNotes([]);
+      setTrashItems([]);
       dispatchPane({ type: "reset" });
       setNoteContents({});
       setNoteViewModes({});
       setLoadingNoteIds(new Set());
+      loadingRef.current = new Set();
       return;
     }
 
@@ -134,20 +204,21 @@ function App() {
     setErrorMessage(null);
 
     try {
-      const entries = await listNotesWithFolders();
+      const [entries, trash] = await Promise.all([listNotesWithFolders(), listTrash()]);
       setNotes(entries);
+      setTrashItems(trash);
       setSelectedFolderPath((current) => {
-        if (!current) return current;
-        return folderExists(entries, current) ? current : null;
+        if (!current) {
+          return current;
+        }
+        return findFolderByPath(entries, current) ? current : null;
       });
 
-      const existingIds = collectNoteIds(entries);
-      setNoteViewModes((current) => {
-        const next = Object.fromEntries(
-          Object.entries(current).filter(([noteId]) => existingIds.has(noteId))
-        ) as Record<string, NoteViewMode>;
-        return next;
-      });
+      const existingIds = new Set(collectNotes(entries).map((note) => note.id));
+      setNoteContents((current) => retainRecordEntries(current, existingIds));
+      setNoteViewModes((current) => retainRecordEntries(current, existingIds));
+      setLoadingNoteIds((current) => retainLoadingIds(current, existingIds));
+      loadingRef.current = retainLoadingIds(loadingRef.current, existingIds);
     } catch (error) {
       console.error(error);
       setErrorMessage("Unable to load notes. Check folder permissions.");
@@ -157,8 +228,8 @@ function App() {
   }, [notesDirectory]);
 
   useEffect(() => {
-    void loadNotes();
-  }, [loadNotes]);
+    void loadVaultData();
+  }, [loadVaultData]);
 
   useEffect(() => {
     const handleResize = () => {
@@ -175,9 +246,15 @@ function App() {
   }, []);
 
   useEffect(() => {
-    if (sidebarCollapsed) return;
+    if (sidebarCollapsed) {
+      return;
+    }
     window.localStorage.setItem(SIDEBAR_WIDTH_KEY, sidebarWidth.toString());
   }, [sidebarCollapsed, sidebarWidth]);
+
+  useEffect(() => {
+    window.localStorage.setItem(SIDEBAR_PREFERENCES_KEY, JSON.stringify(sidebarPreferences));
+  }, [sidebarPreferences]);
 
   const handleOpenVault = async () => {
     setErrorMessage(null);
@@ -190,6 +267,7 @@ function App() {
         setNoteContents({});
         setNoteViewModes({});
         setLoadingNoteIds(new Set());
+        loadingRef.current = new Set();
       }
     } catch (error) {
       console.error(error);
@@ -203,8 +281,12 @@ function App() {
       const notePath = note.path;
       const noteTitle = note.title;
 
-      if (Object.prototype.hasOwnProperty.call(noteContents, noteId)) return;
-      if (loadingRef.current.has(noteId)) return;
+      if (Object.prototype.hasOwnProperty.call(noteContents, noteId)) {
+        return;
+      }
+      if (loadingRef.current.has(noteId)) {
+        return;
+      }
 
       loadingRef.current.add(noteId);
       setLoadingNoteIds((current) => new Set(current).add(noteId));
@@ -250,8 +332,7 @@ function App() {
     setErrorMessage(null);
     try {
       const created = await createNote(title, selectedFolderPath);
-      await loadNotes();
-      setNoteContents((current) => ({ ...current, [created.id]: "" }));
+      await loadVaultData();
       await openNoteInPane(created, "active");
     } catch (error) {
       console.error(error);
@@ -259,29 +340,66 @@ function App() {
     }
   };
 
-  const handleDeleteNote = async (note: Note) => {
+  const handleTrashNote = async (note: Note) => {
+    if (!window.confirm(`Move "${note.title}" to trash?`)) {
+      return;
+    }
+
     setErrorMessage(null);
     try {
-      await deleteNote(note.path);
-      await loadNotes();
-      dispatchPane({ type: "remove-note", noteId: note.id });
-      setNoteContents((current) => {
-        return Object.fromEntries(Object.entries(current).filter(([key]) => key !== note.id));
-      });
-      setNoteViewModes((current) => {
-        const next = Object.fromEntries(
-          Object.entries(current).filter(([key]) => key !== note.id)
-        ) as Record<string, NoteViewMode>;
-        return next;
-      });
-      setLoadingNoteIds((current) => {
-        const next = new Set(current);
-        next.delete(note.id);
-        return next;
-      });
+      await trashEntry(note.path);
+      removeNotesFromState([note.id]);
+      await loadVaultData();
     } catch (error) {
       console.error(error);
-      setErrorMessage("Unable to delete the note.");
+      setErrorMessage("Unable to move the note to trash.");
+    }
+  };
+
+  const handleTrashFolder = async (folderPath: string) => {
+    const folder = findFolderByPath(notes, folderPath);
+    if (!folder) {
+      return;
+    }
+
+    if (!window.confirm(`Move folder "${folder.name}" and its contents to trash?`)) {
+      return;
+    }
+
+    setErrorMessage(null);
+    try {
+      await trashEntry(folder.path);
+      removeNotesFromState(collectNotes([folder]).map((note) => note.id));
+      await loadVaultData();
+    } catch (error) {
+      console.error(error);
+      setErrorMessage("Unable to move the folder to trash.");
+    }
+  };
+
+  const handleRestoreTrashItem = async (record: TrashRecord) => {
+    setErrorMessage(null);
+    try {
+      await restoreTrashItem(record.trashPath);
+      await loadVaultData();
+    } catch (error) {
+      console.error(error);
+      setErrorMessage("Unable to restore the item from trash.");
+    }
+  };
+
+  const handlePermanentDeleteTrashItem = async (record: TrashRecord) => {
+    if (!window.confirm(`Permanently delete "${record.trashPath}"? This cannot be undone.`)) {
+      return;
+    }
+
+    setErrorMessage(null);
+    try {
+      await permanentlyDeleteTrashItem(record.trashPath);
+      await loadVaultData();
+    } catch (error) {
+      console.error(error);
+      setErrorMessage("Unable to permanently delete the item.");
     }
   };
 
@@ -289,7 +407,7 @@ function App() {
     setErrorMessage(null);
     try {
       const created = await createFolder(name, selectedFolderPath);
-      await loadNotes();
+      await loadVaultData();
       setSelectedFolderPath(created.path);
     } catch (error) {
       console.error(error);
@@ -299,10 +417,13 @@ function App() {
 
   const handleAutoSave = async (noteId: string, nextValue: string) => {
     const note = getNoteById(noteId);
-    if (!note) return;
+    if (!note) {
+      return;
+    }
 
     try {
       await updateNote(note.path, nextValue);
+      await loadVaultData();
     } catch (error) {
       console.error(error);
       setErrorMessage("Auto-save failed. Check disk access.");
@@ -318,8 +439,12 @@ function App() {
   };
 
   const handleSidebarPointerDown = (event: ReactPointerEvent<HTMLDivElement>) => {
-    if (event.button !== 0) return;
-    if ((event.target as HTMLElement).closest("button")) return;
+    if (event.button !== 0) {
+      return;
+    }
+    if ((event.target as HTMLElement).closest("button")) {
+      return;
+    }
     event.preventDefault();
 
     if (sidebarCollapsed) {
@@ -329,7 +454,9 @@ function App() {
     resizeStateRef.current = { startX: event.clientX, startWidth: sidebarWidth };
 
     const handlePointerMove = (moveEvent: PointerEvent) => {
-      if (!resizeStateRef.current) return;
+      if (!resizeStateRef.current) {
+        return;
+      }
       const maxWidth = Math.floor(window.innerWidth * SIDEBAR_MAX_RATIO);
       const nextWidth =
         resizeStateRef.current.startWidth + (moveEvent.clientX - resizeStateRef.current.startX);
@@ -360,8 +487,11 @@ function App() {
         <NoteList
           directoryPath={notesDirectory}
           notes={notes}
+          trashItems={trashItems}
           selectedNoteId={activeNoteId}
           selectedFolderPath={selectedFolderPath}
+          sidebarPreferences={sidebarPreferences}
+          onSidebarPreferencesChange={setSidebarPreferences}
           onOpenVault={() => {
             void handleOpenVault();
           }}
@@ -380,8 +510,17 @@ function App() {
           onOpenInNewPane={(note) => {
             void openNoteInPane(note, "new");
           }}
-          onDeleteNote={(note) => {
-            void handleDeleteNote(note);
+          onTrashNote={(note) => {
+            void handleTrashNote(note);
+          }}
+          onTrashFolder={(folderPath) => {
+            void handleTrashFolder(folderPath);
+          }}
+          onRestoreTrashItem={(record) => {
+            void handleRestoreTrashItem(record);
+          }}
+          onPermanentlyDeleteTrashItem={(record) => {
+            void handlePermanentDeleteTrashItem(record);
           }}
           errorMessage={errorMessage}
         />

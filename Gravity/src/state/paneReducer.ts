@@ -15,6 +15,7 @@ export type PaneAction =
   | { type: "open-note"; noteId: string; mode: OpenMode; newPaneId: string }
   | { type: "close-pane"; paneId: string }
   | { type: "remove-note"; noteId: string }
+  | { type: "remove-notes"; noteIds: string[] }
   | { type: "activate-pane"; paneId: string | null };
 
 export const initialPaneSessionState: PaneSessionState = {
@@ -76,8 +77,9 @@ function closePane(state: PaneSessionState, paneId: string): PaneSessionState {
   };
 }
 
-function removeNoteFromPanes(state: PaneSessionState, noteId: string): PaneSessionState {
-  const panes = state.panes.filter((pane) => pane.noteId !== noteId);
+function removeNotesFromPanes(state: PaneSessionState, noteIds: string[]): PaneSessionState {
+  const deletedIds = new Set(noteIds);
+  const panes = state.panes.filter((pane) => !deletedIds.has(pane.noteId));
   return {
     panes,
     activePaneId: panes.some((pane) => pane.id === state.activePaneId)
@@ -95,7 +97,9 @@ export function paneSessionReducer(state: PaneSessionState, action: PaneAction):
     case "close-pane":
       return closePane(state, action.paneId);
     case "remove-note":
-      return removeNoteFromPanes(state, action.noteId);
+      return removeNotesFromPanes(state, [action.noteId]);
+    case "remove-notes":
+      return removeNotesFromPanes(state, action.noteIds);
     case "activate-pane":
       return {
         ...state,

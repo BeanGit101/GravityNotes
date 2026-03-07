@@ -1,18 +1,44 @@
-import { useEffect, useMemo, useState, type CSSProperties, type FormEvent } from "react";
-import type { FileSystemItem, FolderItem, Note } from "../types/notes";
+import {
+  useMemo,
+  useState,
+  type CSSProperties,
+  type Dispatch,
+  type FormEvent,
+  type SetStateAction,
+} from "react";
+import type { FileSystemItem, SidebarPreferences, TrashRecord } from "../types/notes";
+import {
+  collectAvailableTags,
+  collectNotes,
+  findFolderByPath,
+  getVisibleNoteTree,
+} from "../utils/noteTree";
+
+const DEFAULT_SIDEBAR_PREFERENCES: SidebarPreferences = {
+  searchText: "",
+  selectedTags: [],
+  sortMode: "updated",
+  sortDirection: "desc",
+};
 
 interface NoteListProps {
   directoryPath: string;
   notes: FileSystemItem[];
+  trashItems?: TrashRecord[];
   selectedNoteId: string | null;
   selectedFolderPath: string | null;
+  sidebarPreferences?: SidebarPreferences;
+  onSidebarPreferencesChange?: Dispatch<SetStateAction<SidebarPreferences>>;
   onOpenVault: () => void;
   onCreateNote: (title: string) => void;
   onCreateFolder: (name: string) => void;
   onSelectFolder: (folderPath: string | null) => void;
-  onSelectNote: (note: Note) => void;
-  onOpenInNewPane: (note: Note) => void;
-  onDeleteNote: (note: Note) => void;
+  onSelectNote: (note: Extract<FileSystemItem, { type: "file" }>) => void;
+  onOpenInNewPane: (note: Extract<FileSystemItem, { type: "file" }>) => void;
+  onTrashNote?: (note: Extract<FileSystemItem, { type: "file" }>) => void;
+  onTrashFolder?: (folderPath: string) => void;
+  onRestoreTrashItem?: (record: TrashRecord) => void;
+  onPermanentlyDeleteTrashItem?: (record: TrashRecord) => void;
   errorMessage: string | null;
 }
 
@@ -47,21 +73,6 @@ function buildNotesTreeStats(items: FileSystemItem[]): NotesTreeStats {
   };
 }
 
-function findFolderByPath(items: FileSystemItem[], path: string): FolderItem | null {
-  for (const item of items) {
-    if (item.type === "folder") {
-      if (item.path === path) {
-        return item;
-      }
-      const match = findFolderByPath(item.children, path);
-      if (match) {
-        return match;
-      }
-    }
-  }
-  return null;
-}
-
 function findFolderChainForNote(items: FileSystemItem[], noteId: string): string[] | null {
   for (const item of items) {
     if (item.type === "file" && item.id === noteId) {
@@ -77,45 +88,78 @@ function findFolderChainForNote(items: FileSystemItem[], noteId: string): string
   return null;
 }
 
+function getPathLabel(path: string): string {
+  const parts = path.split(/[/\\]/).filter(Boolean);
+  return parts[parts.length - 1] ?? path;
+}
+
+function formatDeletedAt(value: number): string {
+  if (!Number.isFinite(value)) {
+    return "Unknown time";
+  }
+  return new Date(value).toLocaleString();
+}
+
 export function NoteList({
   directoryPath,
   notes,
+  trashItems = [],
   selectedNoteId,
   selectedFolderPath,
+  sidebarPreferences = DEFAULT_SIDEBAR_PREFERENCES,
+  onSidebarPreferencesChange = (() => undefined) as Dispatch<SetStateAction<SidebarPreferences>>,
   onOpenVault,
   onCreateNote,
   onCreateFolder,
   onSelectFolder,
   onSelectNote,
   onOpenInNewPane,
-  onDeleteNote,
+  onTrashNote = () => undefined,
+  onTrashFolder = () => undefined,
+  onRestoreTrashItem = () => undefined,
+  onPermanentlyDeleteTrashItem = () => undefined,
   errorMessage,
 }: NoteListProps) {
   const [newTitle, setNewTitle] = useState("");
   const [newFolderName, setNewFolderName] = useState("");
   const [expandedFolders, setExpandedFolders] = useState<Set<string>>(() => new Set());
-  const [contextMenu, setContextMenu] = useState<{
-    note: Note;
-    x: number;
-    y: number;
-  } | null>(null);
   const canCreate = Boolean(directoryPath && newTitle.trim());
   const canCreateFolder = Boolean(directoryPath && newFolderName.trim());
-
-  const { totalNotes, folderNoteCounts } = useMemo(() => buildNotesTreeStats(notes), [notes]);
+  const availableTags = useMemo(() => collectAvailableTags(notes), [notes]);
+  const visibleItems = useMemo(
+    () => getVisibleNoteTree(notes, sidebarPreferences, selectedFolderPath),
+    [notes, selectedFolderPath, sidebarPreferences]
+  );
+  const visibleNotes = useMemo(() => collectNotes(visibleItems), [visibleItems]);
+  const { totalNotes, folderNoteCounts } = useMemo(
+    () => buildNotesTreeStats(visibleItems),
+    [visibleItems]
+  );
 
   const handleCreate = (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
-    if (!canCreate) return;
+    if (!canCreate) {
+      return;
+    }
     onCreateNote(newTitle.trim());
     setNewTitle("");
   };
 
   const handleCreateFolder = (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
-    if (!canCreateFolder) return;
+    if (!canCreateFolder) {
+      return;
+    }
     onCreateFolder(newFolderName.trim());
     setNewFolderName("");
+  };
+
+  const handleSearchSubmit = (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    const firstVisibleNote = visibleNotes[0];
+    if (firstVisibleNote) {
+      onSelectNote(firstVisibleNote);
+    }
   };
 
   const selectedFolderLabel = useMemo(() => {
@@ -130,9 +174,9 @@ export function NoteList({
     if (!selectedNoteId) {
       return new Set<string>();
     }
-    const chain = findFolderChainForNote(notes, selectedNoteId);
+    const chain = findFolderChainForNote(visibleItems, selectedNoteId);
     return new Set(chain ?? []);
-  }, [notes, selectedNoteId]);
+  }, [selectedNoteId, visibleItems]);
 
   const mergedExpandedFolders = useMemo(() => {
     const next = new Set(expandedFolders);
@@ -140,27 +184,14 @@ export function NoteList({
     return next;
   }, [autoExpandedFolders, expandedFolders]);
 
-  useEffect(() => {
-    if (!contextMenu) return;
-
-    const handleClick = () => {
-      setContextMenu(null);
-    };
-
-    const handleKey = (event: KeyboardEvent) => {
-      if (event.key === "Escape") {
-        setContextMenu(null);
-      }
-    };
-
-    window.addEventListener("click", handleClick);
-    window.addEventListener("keydown", handleKey);
-
-    return () => {
-      window.removeEventListener("click", handleClick);
-      window.removeEventListener("keydown", handleKey);
-    };
-  }, [contextMenu]);
+  const sortDirectionLabel =
+    sidebarPreferences.sortMode === "updated"
+      ? sidebarPreferences.sortDirection === "desc"
+        ? "Newest first"
+        : "Oldest first"
+      : sidebarPreferences.sortDirection === "asc"
+        ? "A to Z"
+        : "Z to A";
 
   const renderItems = (items: FileSystemItem[], depth = 0) =>
     items.map((item) => {
@@ -184,9 +215,11 @@ export function NoteList({
                 className="note-list__toggle"
                 type="button"
                 onClick={() => {
-                  if (!hasChildren) return;
-                  setExpandedFolders((prev) => {
-                    const next = new Set(prev);
+                  if (!hasChildren) {
+                    return;
+                  }
+                  setExpandedFolders((previous) => {
+                    const next = new Set(previous);
                     if (next.has(item.path)) {
                       next.delete(item.path);
                     } else {
@@ -205,8 +238,8 @@ export function NoteList({
                 type="button"
                 onClick={() => {
                   onSelectFolder(item.path);
-                  setExpandedFolders((prev) => {
-                    const next = new Set(prev);
+                  setExpandedFolders((previous) => {
+                    const next = new Set(previous);
                     next.add(item.path);
                     return next;
                   });
@@ -216,6 +249,15 @@ export function NoteList({
                 <span className="note-list__count">
                   {noteCount} {noteCount === 1 ? "note" : "notes"}
                 </span>
+              </button>
+              <button
+                className="note-list__action note-list__action--danger"
+                type="button"
+                onClick={() => {
+                  onTrashFolder(item.path);
+                }}
+              >
+                Trash
               </button>
             </div>
             {isExpanded && item.children.length > 0 && (
@@ -234,14 +276,6 @@ export function NoteList({
               selectedNoteId === item.id ? "note-list__row--active" : ""
             }`}
             style={depthStyle}
-            onContextMenu={(event) => {
-              event.preventDefault();
-              setContextMenu({
-                note: item,
-                x: event.clientX,
-                y: event.clientY,
-              });
-            }}
           >
             <button
               className="note-list__select"
@@ -250,10 +284,15 @@ export function NoteList({
                 onSelectNote(item);
               }}
             >
-              {item.title}
+              <span className="note-list__note-title">{item.title}</span>
+              <span className="note-list__note-meta">
+                {Number.isFinite(item.updatedAt)
+                  ? new Date(item.updatedAt).toLocaleString()
+                  : "Unknown update"}
+              </span>
             </button>
             <button
-              className="note-list__split"
+              className="note-list__action"
               type="button"
               onClick={(event) => {
                 event.stopPropagation();
@@ -264,14 +303,14 @@ export function NoteList({
               Split
             </button>
             <button
-              className="note-list__delete"
+              className="note-list__action note-list__action--danger"
               type="button"
               onClick={() => {
-                onDeleteNote(item);
+                onTrashNote(item);
               }}
-              aria-label={`Delete ${item.title}`}
+              aria-label={`Move ${item.title} to trash`}
             >
-              Delete
+              Trash
             </button>
           </div>
         </li>
@@ -294,6 +333,105 @@ export function NoteList({
           </button>
         )}
       </div>
+
+      {directoryPath && (
+        <form className="note-list__search" onSubmit={handleSearchSubmit}>
+          <input
+            className="input"
+            placeholder="Search filenames"
+            value={sidebarPreferences.searchText}
+            onChange={(event) => {
+              const searchText = event.target.value;
+              onSidebarPreferencesChange((current) => ({ ...current, searchText }));
+            }}
+          />
+          <button
+            className="button button--secondary"
+            type="submit"
+            disabled={visibleNotes.length === 0}
+          >
+            Open Match
+          </button>
+        </form>
+      )}
+
+      {directoryPath && (
+        <div className="note-list__controls">
+          <label className="note-list__sort">
+            <span className="note-list__control-label">Sort</span>
+            <select
+              className="input note-list__select-input"
+              value={sidebarPreferences.sortMode}
+              onChange={(event) => {
+                const sortMode = event.target.value as SidebarPreferences["sortMode"];
+                onSidebarPreferencesChange((current) => ({ ...current, sortMode }));
+              }}
+            >
+              <option value="updated">Updated</option>
+              <option value="name">Name</option>
+            </select>
+          </label>
+          <button
+            className="button button--secondary note-list__direction"
+            type="button"
+            onClick={() => {
+              onSidebarPreferencesChange((current) => ({
+                ...current,
+                sortDirection: current.sortDirection === "asc" ? "desc" : "asc",
+              }));
+            }}
+          >
+            {sortDirectionLabel}
+          </button>
+          {(sidebarPreferences.searchText || sidebarPreferences.selectedTags.length > 0) && (
+            <button
+              className="note-list__link"
+              type="button"
+              onClick={() => {
+                onSidebarPreferencesChange((current) => ({
+                  ...current,
+                  searchText: "",
+                  selectedTags: [],
+                }));
+              }}
+            >
+              Clear filters
+            </button>
+          )}
+        </div>
+      )}
+
+      {directoryPath && availableTags.length > 0 && (
+        <div className="note-list__tags">
+          <span className="note-list__control-label">Tags</span>
+          <div className="note-list__tag-chips">
+            {availableTags.map((tag) => {
+              const isSelected = sidebarPreferences.selectedTags.some(
+                (selectedTag) => selectedTag.toLowerCase() === tag.toLowerCase()
+              );
+              return (
+                <button
+                  key={tag}
+                  className={`note-list__tag ${isSelected ? "note-list__tag--selected" : ""}`}
+                  type="button"
+                  onClick={() => {
+                    onSidebarPreferencesChange((current) => ({
+                      ...current,
+                      selectedTags: isSelected
+                        ? current.selectedTags.filter(
+                            (selectedTag) => selectedTag.toLowerCase() !== tag.toLowerCase()
+                          )
+                        : [...current.selectedTags, tag],
+                    }));
+                  }}
+                >
+                  #{tag}
+                </button>
+              );
+            })}
+          </div>
+        </div>
+      )}
 
       {directoryPath && (
         <form className="note-list__new" onSubmit={handleCreate}>
@@ -329,7 +467,7 @@ export function NoteList({
 
       {directoryPath && (
         <div className="note-list__selection">
-          <span className="note-list__selection-label">New items in</span>
+          <span className="note-list__selection-label">Browsing</span>
           <span className="note-list__selection-value">{selectedFolderLabel}</span>
           {selectedFolderPath && (
             <button
@@ -348,32 +486,64 @@ export function NoteList({
       {errorMessage && <p className="note-list__error">{errorMessage}</p>}
 
       {directoryPath && (
-        <ul className="note-list__items">
+        <ul className="note-list__items note-list__items--scrollable">
           {totalNotes === 0 && (
-            <li className="note-list__empty">No notes yet. Create the first one.</li>
+            <li className="note-list__empty">
+              {notes.length === 0
+                ? "No notes yet. Create the first one."
+                : "No notes match the current filters."}
+            </li>
           )}
-          {renderItems(notes)}
+          {renderItems(visibleItems)}
         </ul>
       )}
 
-      {contextMenu && (
-        <div
-          className="note-list__menu"
-          style={{ top: contextMenu.y, left: contextMenu.x }}
-          role="menu"
-        >
-          <button
-            className="note-list__menu-item"
-            type="button"
-            onClick={() => {
-              onOpenInNewPane(contextMenu.note);
-              setContextMenu(null);
-            }}
-            role="menuitem"
-          >
-            Open in split pane
-          </button>
-        </div>
+      {directoryPath && (
+        <section className="note-list__trash">
+          <div className="note-list__section-header">
+            <div>
+              <p className="note-list__eyebrow">Trash</p>
+              <h3 className="note-list__section-title">Deleted Items</h3>
+            </div>
+            <span className="note-list__count">{trashItems.length}</span>
+          </div>
+          {trashItems.length === 0 ? (
+            <p className="note-list__empty">Trash is empty.</p>
+          ) : (
+            <ul className="note-list__trash-items">
+              {trashItems.map((record) => (
+                <li key={record.trashPath} className="note-list__trash-item">
+                  <div>
+                    <p className="note-list__trash-name">{getPathLabel(record.originalPath)}</p>
+                    <p className="note-list__trash-meta">
+                      {record.itemType} � deleted {formatDeletedAt(record.deletedAt)}
+                    </p>
+                  </div>
+                  <div className="note-list__trash-actions">
+                    <button
+                      className="note-list__action"
+                      type="button"
+                      onClick={() => {
+                        onRestoreTrashItem(record);
+                      }}
+                    >
+                      Restore
+                    </button>
+                    <button
+                      className="note-list__action note-list__action--danger"
+                      type="button"
+                      onClick={() => {
+                        onPermanentlyDeleteTrashItem(record);
+                      }}
+                    >
+                      Delete
+                    </button>
+                  </div>
+                </li>
+              ))}
+            </ul>
+          )}
+        </section>
       )}
     </div>
   );
