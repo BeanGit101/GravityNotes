@@ -1,8 +1,8 @@
-import { type ReactNode, useEffect, useMemo, useRef } from "react";
+import { type ReactNode, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { defaultKeymap } from "@codemirror/commands";
 import { markdown } from "@codemirror/lang-markdown";
 import { lintGutter } from "@codemirror/lint";
-import { Compartment, EditorState } from "@codemirror/state";
+import { Compartment, EditorSelection, EditorState } from "@codemirror/state";
 import { EditorView, keymap, placeholder } from "@codemirror/view";
 import { GFM } from "@lezer/markdown";
 import { checkboxPlugin, checkboxToggleFacet } from "../codemirror/checkboxPlugin";
@@ -36,6 +36,34 @@ interface NoteEditorProps {
   isLoading?: boolean;
 }
 
+interface SearchMatch {
+  from: number;
+  to: number;
+}
+
+function findMatches(value: string, query: string, matchCase: boolean): SearchMatch[] {
+  if (!query) {
+    return [];
+  }
+
+  const matches: SearchMatch[] = [];
+  const source = matchCase ? value : value.toLowerCase();
+  const needle = matchCase ? query : query.toLowerCase();
+  let startIndex = 0;
+
+  while (startIndex <= source.length - needle.length) {
+    const index = source.indexOf(needle, startIndex);
+    if (index === -1) {
+      break;
+    }
+
+    matches.push({ from: index, to: index + needle.length });
+    startIndex = index + Math.max(needle.length, 1);
+  }
+
+  return matches;
+}
+
 export function NoteEditor({
   note,
   value,
@@ -47,6 +75,7 @@ export function NoteEditor({
   isLoading = false,
 }: NoteEditorProps) {
   const containerRef = useRef<HTMLDivElement>(null);
+  const findInputRef = useRef<HTMLInputElement>(null);
   const viewRef = useRef<EditorView | null>(null);
   const lastSavedRef = useRef<string>(value);
   const valueRef = useRef(value);
@@ -57,10 +86,27 @@ export function NoteEditor({
   const undoHistoryByNoteRef = useRef<Map<string, UndoRedoHistorySnapshot>>(new Map());
   const activeHistoryKeyRef = useRef<string | null>(note?.path ?? note?.id ?? null);
   const suppressHistoryRef = useRef(false);
+  const openFindRef = useRef<(showReplace: boolean) => void>(() => {});
+  const findNextRef = useRef<() => void>(() => {});
+  const findPrevRef = useRef<() => void>(() => {});
+
+  const [isFindOpen, setIsFindOpen] = useState(false);
+  const [showReplace, setShowReplace] = useState(false);
+  const [findQuery, setFindQuery] = useState("");
+  const [replaceValue, setReplaceValue] = useState("");
+  const [matchCase, setMatchCase] = useState(false);
+  const [activeMatchIndex, setActiveMatchIndex] = useState(0);
 
   const isPreviewMode = viewMode === "preview";
   const canToggleCheckboxes = Boolean(note) && !isLoading && !isPreviewMode;
   const isEditable = canToggleCheckboxes;
+  const matches = useMemo(
+    () => findMatches(value, findQuery, matchCase),
+    [findQuery, matchCase, value]
+  );
+  const resolvedActiveMatchIndex =
+    matches.length === 0 ? 0 : Math.min(activeMatchIndex, matches.length - 1);
+  const activeMatch = matches.length > 0 ? matches[resolvedActiveMatchIndex] : null;
 
   const placeholderText = note
     ? isLoading
@@ -81,6 +127,108 @@ export function NoteEditor({
   const placeholderCompartment = useMemo(() => new Compartment(), []);
   const checkboxToggleCompartment = useMemo(() => new Compartment(), []);
 
+  const selectMatch = useCallback((match: SearchMatch | null) => {
+    const view = viewRef.current;
+    if (!view || !match) {
+      return;
+    }
+
+    view.dispatch({
+      selection: EditorSelection.single(match.from, match.to),
+      scrollIntoView: true,
+    });
+    view.focus();
+  }, []);
+
+  const openFind = useCallback((nextShowReplace: boolean) => {
+    setIsFindOpen(true);
+    setShowReplace(nextShowReplace);
+
+    const view = viewRef.current;
+    if (!view) {
+      return;
+    }
+
+    const selection = view.state.sliceDoc(
+      view.state.selection.main.from,
+      view.state.selection.main.to
+    );
+    if (selection.trim()) {
+      setFindQuery(selection);
+      setActiveMatchIndex(0);
+    }
+  }, []);
+
+  const goToMatch = useCallback(
+    (direction: 1 | -1) => {
+      if (matches.length === 0) {
+        return;
+      }
+
+      setActiveMatchIndex((current) => {
+        const next = (current + direction + matches.length) % matches.length;
+        window.requestAnimationFrame(() => {
+          const match = matches[next] ?? null;
+          selectMatch(match);
+        });
+        return next;
+      });
+    },
+    [matches, selectMatch]
+  );
+
+  const replaceCurrentMatch = useCallback(() => {
+    const view = viewRef.current;
+    if (!view || !activeMatch || !findQuery || isPreviewMode || isLoading) {
+      return;
+    }
+
+    const currentValue = view.state.doc.toString();
+    const nextValue = `${currentValue.slice(0, activeMatch.from)}${replaceValue}${currentValue.slice(activeMatch.to)}`;
+    view.dispatch({
+      changes: { from: activeMatch.from, to: activeMatch.to, insert: replaceValue },
+      selection: EditorSelection.single(activeMatch.from, activeMatch.from + replaceValue.length),
+      scrollIntoView: true,
+    });
+
+    const nextMatches = findMatches(nextValue, findQuery, matchCase);
+    setActiveMatchIndex(Math.min(resolvedActiveMatchIndex, Math.max(nextMatches.length - 1, 0)));
+  }, [
+    activeMatch,
+    findQuery,
+    isLoading,
+    isPreviewMode,
+    matchCase,
+    replaceValue,
+    resolvedActiveMatchIndex,
+  ]);
+
+  const replaceAllMatches = useCallback(() => {
+    const view = viewRef.current;
+    if (!view || !findQuery || matches.length === 0 || isPreviewMode || isLoading) {
+      return;
+    }
+
+    const currentValue = view.state.doc.toString();
+    let cursor = 0;
+    const nextValue =
+      matches
+        .map((match) => {
+          const segment = `${currentValue.slice(cursor, match.from)}${replaceValue}`;
+          cursor = match.to;
+          return segment;
+        })
+        .join("") + currentValue.slice(matches[matches.length - 1]?.to ?? currentValue.length);
+
+    sealBurst(undoRedoRef.current);
+    view.dispatch({
+      changes: { from: 0, to: currentValue.length, insert: nextValue },
+      selection: EditorSelection.single(0),
+      scrollIntoView: true,
+    });
+    setActiveMatchIndex(0);
+  }, [findQuery, isLoading, isPreviewMode, matches, replaceValue]);
+
   useEffect(() => {
     onChangeRef.current = onChange;
   }, [onChange]);
@@ -88,6 +236,31 @@ export function NoteEditor({
   useEffect(() => {
     onAutoSaveRef.current = onAutoSave;
   }, [onAutoSave]);
+
+  useEffect(() => {
+    if (!isFindOpen) {
+      return;
+    }
+    findInputRef.current?.focus();
+    findInputRef.current?.select();
+  }, [isFindOpen, showReplace]);
+
+  useEffect(() => {
+    openFindRef.current = openFind;
+    findNextRef.current = () => {
+      goToMatch(1);
+    };
+    findPrevRef.current = () => {
+      goToMatch(-1);
+    };
+  }, [goToMatch, openFind]);
+
+  useEffect(() => {
+    if (!activeMatch || !isFindOpen) {
+      return;
+    }
+    selectMatch(activeMatch);
+  }, [activeMatch, isFindOpen, selectMatch]);
 
   useEffect(() => {
     const container = containerRef.current;
@@ -136,6 +309,28 @@ export function NoteEditor({
 
     const eventHandlers = EditorView.domEventHandlers({
       keydown: (event, view) => {
+        if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "f") {
+          event.preventDefault();
+          openFindRef.current(false);
+          return true;
+        }
+
+        if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "h") {
+          event.preventDefault();
+          openFindRef.current(true);
+          return true;
+        }
+
+        if (event.key === "F3") {
+          event.preventDefault();
+          if (event.shiftKey) {
+            findPrevRef.current();
+          } else {
+            findNextRef.current();
+          }
+          return true;
+        }
+
         if (event.key === "Enter") {
           sealBurst(undoRedoRef.current);
         }
@@ -205,11 +400,7 @@ export function NoteEditor({
       ],
     });
 
-    const view = new EditorView({
-      state,
-      parent: container,
-    });
-
+    const view = new EditorView({ state, parent: container });
     viewRef.current = view;
 
     return () => {
@@ -331,8 +522,140 @@ export function NoteEditor({
           <p className="note-editor__eyebrow">Editor</p>
           <h3 className="note-editor__title">{note ? note.title : "No note selected"}</h3>
         </div>
-        {toolbarActions && <div className="note-editor__actions">{toolbarActions}</div>}
+        <div className="note-editor__actions">
+          {note && !isPreviewMode && !isLoading && (
+            <>
+              <button
+                className="button button--secondary"
+                type="button"
+                onClick={() => {
+                  openFind(false);
+                }}
+              >
+                Find
+              </button>
+              <button
+                className="button button--secondary"
+                type="button"
+                onClick={() => {
+                  openFind(true);
+                }}
+              >
+                Replace
+              </button>
+            </>
+          )}
+          {toolbarActions}
+        </div>
       </div>
+      {isFindOpen && !isPreviewMode && (
+        <div className="note-editor__findbar">
+          <div className="note-editor__find-row">
+            <input
+              ref={findInputRef}
+              className="input note-editor__find-input"
+              placeholder="Find"
+              value={findQuery}
+              onChange={(event) => {
+                setFindQuery(event.target.value);
+                setActiveMatchIndex(0);
+              }}
+              onKeyDown={(event) => {
+                if (event.key === "Enter") {
+                  event.preventDefault();
+                  if (event.shiftKey) {
+                    goToMatch(-1);
+                  } else {
+                    goToMatch(1);
+                  }
+                }
+                if (event.key === "Escape") {
+                  event.preventDefault();
+                  setIsFindOpen(false);
+                }
+              }}
+            />
+            <span className="note-editor__find-status">
+              {matches.length === 0
+                ? "0 matches"
+                : `${String(resolvedActiveMatchIndex + 1)} / ${String(matches.length)}`}
+            </span>
+            <button
+              className="button button--secondary"
+              type="button"
+              onClick={() => {
+                goToMatch(-1);
+              }}
+            >
+              Prev
+            </button>
+            <button
+              className="button button--secondary"
+              type="button"
+              onClick={() => {
+                goToMatch(1);
+              }}
+            >
+              Next
+            </button>
+            <label className="note-editor__toggle-option">
+              <input
+                type="checkbox"
+                checked={matchCase}
+                onChange={(event) => {
+                  setMatchCase(event.target.checked);
+                  setActiveMatchIndex(0);
+                }}
+              />
+              Match case
+            </label>
+            <button
+              className="button button--secondary"
+              type="button"
+              onClick={() => {
+                setShowReplace((current) => !current);
+              }}
+            >
+              {showReplace ? "Hide Replace" : "Show Replace"}
+            </button>
+            <button
+              className="button button--secondary"
+              type="button"
+              onClick={() => {
+                setIsFindOpen(false);
+              }}
+            >
+              Close
+            </button>
+          </div>
+          {showReplace && (
+            <div className="note-editor__find-row">
+              <input
+                className="input note-editor__find-input"
+                placeholder="Replace"
+                value={replaceValue}
+                onChange={(event) => {
+                  setReplaceValue(event.target.value);
+                }}
+              />
+              <button
+                className="button button--secondary"
+                type="button"
+                onClick={replaceCurrentMatch}
+              >
+                Replace
+              </button>
+              <button
+                className="button button--secondary"
+                type="button"
+                onClick={replaceAllMatches}
+              >
+                Replace All
+              </button>
+            </div>
+          )}
+        </div>
+      )}
       <div
         className={`note-editor__surface ${isPreviewMode ? "note-editor__surface--preview" : ""}`}
       >
