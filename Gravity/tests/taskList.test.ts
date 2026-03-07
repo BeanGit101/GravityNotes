@@ -68,6 +68,18 @@ describe("toggleNthTaskMarker", () => {
     );
   });
 
+  it("toggles inline markers inside formatted prose without changing formatting", () => {
+    const doc = ["Status: **- [ ]** bold", "Follow-up: _- [x]_ italic"].join("\n");
+
+    expect(toggleNthTaskMarker(doc, 0)).toBe(
+      ["Status: **- [x]** bold", "Follow-up: _- [x]_ italic"].join("\n")
+    );
+
+    expect(toggleNthTaskMarker(doc, 1)).toBe(
+      ["Status: **- [ ]** bold", "Follow-up: _- [ ]_ italic"].join("\n")
+    );
+  });
+
   it("ignores bare markers and checkbox-like text inside code", () => {
     const doc = [
       "[ ] standalone marker",

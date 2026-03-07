@@ -39,4 +39,13 @@ describe("parseCheckboxes", () => {
       { index: 1, kind: "inline", checked: true },
     ]);
   });
+
+  it("keeps inline markers interactive inside formatted prose", () => {
+    const markdown = ["Status: **- [x]** bold", "Follow-up: _- [ ]_ italic"].join("\n");
+
+    expect(parseCheckboxes(markdown)).toMatchObject([
+      { index: 0, kind: "inline", checked: true },
+      { index: 1, kind: "inline", checked: false },
+    ]);
+  });
 });
