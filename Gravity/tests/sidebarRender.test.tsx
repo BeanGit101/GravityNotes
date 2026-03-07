@@ -40,11 +40,15 @@ describe("NoteList rendering", () => {
       <NoteList
         directoryPath="/vault"
         notes={notes}
+        templates={[]}
         selectedNoteId={null}
         selectedFolderPath={null}
         onOpenVault={() => {}}
         onCreateNote={() => {}}
         onCreateFolder={() => {}}
+        onCreateTemplate={() => {}}
+        onRenameTemplate={() => {}}
+        onDeleteTemplate={() => {}}
         onSelectFolder={() => {}}
         onSelectNote={() => {}}
         onOpenInNewPane={() => {}}

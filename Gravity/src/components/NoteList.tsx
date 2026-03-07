@@ -1,14 +1,19 @@
 import { useEffect, useMemo, useState, type CSSProperties, type FormEvent } from "react";
 import type { FileSystemItem, FolderItem, Note } from "../types/notes";
+import type { TemplateSummary } from "../types/templates";
 
 interface NoteListProps {
   directoryPath: string;
   notes: FileSystemItem[];
+  templates: TemplateSummary[];
   selectedNoteId: string | null;
   selectedFolderPath: string | null;
   onOpenVault: () => void;
-  onCreateNote: (title: string) => void;
+  onCreateNote: (title: string, templatePath: string | null) => void;
   onCreateFolder: (name: string) => void;
+  onCreateTemplate: (name: string) => void;
+  onRenameTemplate: (template: TemplateSummary, nextName: string) => void;
+  onDeleteTemplate: (template: TemplateSummary) => void;
   onSelectFolder: (folderPath: string | null) => void;
   onSelectNote: (note: Note) => void;
   onOpenInNewPane: (note: Note) => void;
@@ -77,14 +82,27 @@ function findFolderChainForNote(items: FileSystemItem[], noteId: string): string
   return null;
 }
 
+function formatTemplateUpdatedAt(updatedAt: number): string {
+  return new Intl.DateTimeFormat(undefined, {
+    month: "short",
+    day: "numeric",
+    hour: "numeric",
+    minute: "2-digit",
+  }).format(updatedAt);
+}
+
 export function NoteList({
   directoryPath,
   notes,
+  templates,
   selectedNoteId,
   selectedFolderPath,
   onOpenVault,
   onCreateNote,
   onCreateFolder,
+  onCreateTemplate,
+  onRenameTemplate,
+  onDeleteTemplate,
   onSelectFolder,
   onSelectNote,
   onOpenInNewPane,
@@ -92,8 +110,12 @@ export function NoteList({
   errorMessage,
 }: NoteListProps) {
   const [newTitle, setNewTitle] = useState("");
+  const [selectedTemplatePath, setSelectedTemplatePath] = useState<string>("");
   const [newFolderName, setNewFolderName] = useState("");
+  const [newTemplateName, setNewTemplateName] = useState("");
   const [expandedFolders, setExpandedFolders] = useState<Set<string>>(() => new Set());
+  const [editingTemplatePath, setEditingTemplatePath] = useState<string | null>(null);
+  const [editingTemplateName, setEditingTemplateName] = useState("");
   const [contextMenu, setContextMenu] = useState<{
     note: Note;
     x: number;
@@ -101,13 +123,18 @@ export function NoteList({
   } | null>(null);
   const canCreate = Boolean(directoryPath && newTitle.trim());
   const canCreateFolder = Boolean(directoryPath && newFolderName.trim());
+  const canCreateTemplate = Boolean(directoryPath && newTemplateName.trim());
+  const canSaveTemplateRename = Boolean(editingTemplatePath && editingTemplateName.trim());
 
   const { totalNotes, folderNoteCounts } = useMemo(() => buildNotesTreeStats(notes), [notes]);
+  const activeTemplatePath = templates.some((template) => template.path === selectedTemplatePath)
+    ? selectedTemplatePath
+    : "";
 
   const handleCreate = (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
     if (!canCreate) return;
-    onCreateNote(newTitle.trim());
+    onCreateNote(newTitle.trim(), activeTemplatePath || null);
     setNewTitle("");
   };
 
@@ -116,6 +143,13 @@ export function NoteList({
     if (!canCreateFolder) return;
     onCreateFolder(newFolderName.trim());
     setNewFolderName("");
+  };
+
+  const handleCreateTemplate = (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    if (!canCreateTemplate) return;
+    onCreateTemplate(newTemplateName.trim());
+    setNewTemplateName("");
   };
 
   const selectedFolderLabel = useMemo(() => {
@@ -296,7 +330,7 @@ export function NoteList({
       </div>
 
       {directoryPath && (
-        <form className="note-list__new" onSubmit={handleCreate}>
+        <form className="note-list__new note-list__new--templated" onSubmit={handleCreate}>
           <input
             className="input"
             placeholder="New note title"
@@ -305,6 +339,21 @@ export function NoteList({
               setNewTitle(event.target.value);
             }}
           />
+          <select
+            className="input select"
+            aria-label="Select template"
+            value={activeTemplatePath}
+            onChange={(event) => {
+              setSelectedTemplatePath(event.target.value);
+            }}
+          >
+            <option value="">No template</option>
+            {templates.map((template) => (
+              <option key={template.id} value={template.path}>
+                {template.name}
+              </option>
+            ))}
+          </select>
           <button className="button button--secondary" type="submit" disabled={!canCreate}>
             New Note
           </button>
@@ -343,6 +392,122 @@ export function NoteList({
             </button>
           )}
         </div>
+      )}
+
+      {directoryPath && (
+        <section className="template-list">
+          <div className="template-list__header">
+            <div>
+              <p className="note-list__eyebrow">Templates</p>
+              <h3 className="note-list__title template-list__title">Reusable starts</h3>
+            </div>
+          </div>
+          <form
+            className="note-list__new note-list__new--secondary"
+            onSubmit={handleCreateTemplate}
+          >
+            <input
+              className="input"
+              placeholder="New template name"
+              value={newTemplateName}
+              onChange={(event) => {
+                setNewTemplateName(event.target.value);
+              }}
+            />
+            <button
+              className="button button--secondary"
+              type="submit"
+              disabled={!canCreateTemplate}
+            >
+              New Template
+            </button>
+          </form>
+          {templates.length === 0 ? (
+            <p className="note-list__empty">
+              No templates yet. Save one from a note or create a blank starter.
+            </p>
+          ) : (
+            <ul className="template-list__items">
+              {templates.map((template) => {
+                const isEditing = editingTemplatePath === template.path;
+                return (
+                  <li key={template.id} className="template-list__item">
+                    {isEditing ? (
+                      <form
+                        className="template-list__editor"
+                        onSubmit={(event) => {
+                          event.preventDefault();
+                          if (!canSaveTemplateRename) return;
+                          onRenameTemplate(template, editingTemplateName.trim());
+                          setEditingTemplatePath(null);
+                          setEditingTemplateName("");
+                        }}
+                      >
+                        <input
+                          className="input"
+                          value={editingTemplateName}
+                          onChange={(event) => {
+                            setEditingTemplateName(event.target.value);
+                          }}
+                        />
+                        <button
+                          className="button button--secondary"
+                          type="submit"
+                          disabled={!canSaveTemplateRename}
+                        >
+                          Save
+                        </button>
+                        <button
+                          className="button button--secondary"
+                          type="button"
+                          onClick={() => {
+                            setEditingTemplatePath(null);
+                            setEditingTemplateName("");
+                          }}
+                        >
+                          Cancel
+                        </button>
+                      </form>
+                    ) : (
+                      <div className="template-list__row">
+                        <div>
+                          <p className="template-list__name">{template.name}</p>
+                          <p className="template-list__meta">
+                            Updated {formatTemplateUpdatedAt(template.updatedAt)}
+                          </p>
+                        </div>
+                        <div className="template-list__actions">
+                          <button
+                            className="note-list__link"
+                            type="button"
+                            onClick={() => {
+                              setEditingTemplatePath(template.path);
+                              setEditingTemplateName(template.name);
+                            }}
+                          >
+                            Rename
+                          </button>
+                          <button
+                            className="note-list__delete"
+                            type="button"
+                            onClick={() => {
+                              onDeleteTemplate(template);
+                              if (activeTemplatePath === template.path) {
+                                setSelectedTemplatePath("");
+                              }
+                            }}
+                          >
+                            Delete
+                          </button>
+                        </div>
+                      </div>
+                    )}
+                  </li>
+                );
+              })}
+            </ul>
+          )}
+        </section>
       )}
 
       {errorMessage && <p className="note-list__error">{errorMessage}</p>}

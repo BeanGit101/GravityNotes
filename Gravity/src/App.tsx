@@ -15,16 +15,23 @@ import { PaneContainer } from "./components/PaneContainer";
 import {
   createFolder,
   createNote,
+  createTemplate,
+  createTemplateFromNote,
   deleteNote,
+  deleteTemplate,
   getNotesDirectory,
   listNotesWithFolders,
+  listTemplates,
   readNote,
+  readTemplate,
+  renameTemplate,
   selectNotesDirectory,
   updateNote,
 } from "./services/notesService";
 import { initialPaneSessionState, paneSessionReducer, type OpenMode } from "./state/paneReducer";
 import type { NoteViewMode } from "./types/editor";
 import type { FileSystemItem, Note } from "./types/notes";
+import type { TemplateSummary } from "./types/templates";
 
 function folderExists(items: FileSystemItem[], path: string): boolean {
   for (const item of items) {
@@ -65,6 +72,7 @@ function App() {
 
   const [notesDirectory, setNotesDirectory] = useState(getNotesDirectory());
   const [notes, setNotes] = useState<FileSystemItem[]>([]);
+  const [templates, setTemplates] = useState<TemplateSummary[]>([]);
   const [paneSession, dispatchPane] = useReducer(paneSessionReducer, initialPaneSessionState);
   const [noteContents, setNoteContents] = useState<Record<string, string>>({});
   const [noteViewModes, setNoteViewModes] = useState<Record<string, NoteViewMode>>({});
@@ -156,9 +164,25 @@ function App() {
     }
   }, [notesDirectory]);
 
+  const loadTemplateSummaries = useCallback(async () => {
+    if (!notesDirectory) {
+      setTemplates([]);
+      return;
+    }
+
+    try {
+      const nextTemplates = await listTemplates();
+      setTemplates(nextTemplates);
+    } catch (error) {
+      console.error(error);
+      setErrorMessage("Unable to load templates. Check folder permissions.");
+    }
+  }, [notesDirectory]);
+
   useEffect(() => {
     void loadNotes();
-  }, [loadNotes]);
+    void loadTemplateSummaries();
+  }, [loadNotes, loadTemplateSummaries]);
 
   useEffect(() => {
     const handleResize = () => {
@@ -190,6 +214,7 @@ function App() {
         setNoteContents({});
         setNoteViewModes({});
         setLoadingNoteIds(new Set());
+        setTemplates([]);
       }
     } catch (error) {
       console.error(error);
@@ -246,12 +271,12 @@ function App() {
     [ensureNoteLoaded]
   );
 
-  const handleCreateNote = async (title: string) => {
+  const handleCreateNote = async (title: string, templatePath: string | null) => {
     setErrorMessage(null);
     try {
-      const created = await createNote(title, selectedFolderPath);
+      const template = templatePath ? await readTemplate(templatePath) : null;
+      const created = await createNote(title, selectedFolderPath, template);
       await loadNotes();
-      setNoteContents((current) => ({ ...current, [created.id]: "" }));
       await openNoteInPane(created, "active");
     } catch (error) {
       console.error(error);
@@ -294,6 +319,50 @@ function App() {
     } catch (error) {
       console.error(error);
       setErrorMessage("Unable to create the folder.");
+    }
+  };
+
+  const handleCreateTemplate = async (name: string) => {
+    setErrorMessage(null);
+    try {
+      await createTemplate(name, { body: "" });
+      await loadTemplateSummaries();
+    } catch (error) {
+      console.error(error);
+      setErrorMessage("Unable to create the template.");
+    }
+  };
+
+  const handleRenameTemplate = async (template: TemplateSummary, nextName: string) => {
+    setErrorMessage(null);
+    try {
+      await renameTemplate(template.path, nextName);
+      await loadTemplateSummaries();
+    } catch (error) {
+      console.error(error);
+      setErrorMessage("Unable to rename the template.");
+    }
+  };
+
+  const handleDeleteTemplate = async (template: TemplateSummary) => {
+    setErrorMessage(null);
+    try {
+      await deleteTemplate(template.path);
+      await loadTemplateSummaries();
+    } catch (error) {
+      console.error(error);
+      setErrorMessage("Unable to delete the template.");
+    }
+  };
+
+  const handleCreateTemplateFromNote = async (note: Note, value: string) => {
+    setErrorMessage(null);
+    try {
+      await createTemplateFromNote(note.title, value);
+      await loadTemplateSummaries();
+    } catch (error) {
+      console.error(error);
+      setErrorMessage("Unable to create a template from this note.");
     }
   };
 
@@ -360,16 +429,26 @@ function App() {
         <NoteList
           directoryPath={notesDirectory}
           notes={notes}
+          templates={templates}
           selectedNoteId={activeNoteId}
           selectedFolderPath={selectedFolderPath}
           onOpenVault={() => {
             void handleOpenVault();
           }}
-          onCreateNote={(title) => {
-            void handleCreateNote(title);
+          onCreateNote={(title, templatePath) => {
+            void handleCreateNote(title, templatePath);
           }}
           onCreateFolder={(name) => {
             void handleCreateFolder(name);
+          }}
+          onCreateTemplate={(name) => {
+            void handleCreateTemplate(name);
+          }}
+          onRenameTemplate={(template, nextName) => {
+            void handleRenameTemplate(template, nextName);
+          }}
+          onDeleteTemplate={(template) => {
+            void handleDeleteTemplate(template);
           }}
           onSelectFolder={(folderPath) => {
             setSelectedFolderPath(folderPath);
@@ -434,6 +513,9 @@ function App() {
             }}
             onClosePane={handleClosePane}
             onToggleNoteViewMode={toggleNoteViewMode}
+            onCreateTemplateFromNote={(note, value) => {
+              void handleCreateTemplateFromNote(note, value);
+            }}
             onChangeNote={handleChangeNoteContent}
             onAutoSaveNote={handleAutoSave}
           />
