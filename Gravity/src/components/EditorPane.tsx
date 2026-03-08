@@ -65,7 +65,6 @@ export function EditorPane({
             ? {
                 subject: note.subject,
                 tags: note.tags,
-                updatedAt: note.updatedAt,
               }
             : undefined
         }

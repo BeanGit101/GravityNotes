@@ -1132,3 +1132,31 @@ body {
     justify-content: flex-start;
   }
 }
+
+.note-list__filters--sorting {
+  gap: 0.9rem;
+}
+
+.note-list__sort-controls {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0.75rem;
+}
+
+.note-list__sort-field {
+  display: flex;
+  flex-direction: column;
+  gap: 0.45rem;
+}
+
+.note-list__items--scrollable {
+  min-height: 0;
+  overflow-y: auto;
+  padding-right: 0.25rem;
+}
+
+@media (max-width: 1100px) {
+  .note-list__sort-controls {
+    grid-template-columns: 1fr;
+  }
+}

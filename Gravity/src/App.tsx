@@ -40,7 +40,15 @@ import {
 import { initialPaneSessionState, paneSessionReducer, type OpenMode } from "./state/paneReducer";
 import { markStartupError, markStartupReady, recordStartupEvent } from "./state/startupDiagnostics";
 import type { NoteViewMode } from "./types/editor";
-import type { FileSystemItem, Note, NoteDocument, NoteMetadata, TrashEntry } from "./types/notes";
+import type {
+  FileSystemItem,
+  FolderItem,
+  Note,
+  NoteDocument,
+  NoteMetadata,
+  SidebarPreferences,
+  TrashEntry,
+} from "./types/notes";
 import type { TemplateSummary } from "./types/templates";
 import {
   DEFAULT_TAG_OPTIONS,
@@ -50,6 +58,54 @@ import {
   parseNoteDocument,
   serializeNoteDocument,
 } from "./utils/frontmatter";
+
+const SIDEBAR_WIDTH_KEY = "gravity.sidebarWidth";
+const SIDEBAR_PREFERENCES_KEY = "gravity.sidebarPreferences";
+const SIDEBAR_MIN_WIDTH = 200;
+const SIDEBAR_COLLAPSED_WIDTH = 64;
+const SIDEBAR_MAX_RATIO = 0.6;
+
+const defaultSidebarPreferences: SidebarPreferences = {
+  searchText: "",
+  selectedTags: [],
+  sortMode: "updated",
+  sortDirection: "desc",
+};
+
+function isSortMode(value: unknown): value is SidebarPreferences["sortMode"] {
+  return value === "name" || value === "updated";
+}
+
+function isSortDirection(value: unknown): value is SidebarPreferences["sortDirection"] {
+  return value === "asc" || value === "desc";
+}
+
+function readSidebarPreferences(): SidebarPreferences {
+  if (typeof window === "undefined") {
+    return defaultSidebarPreferences;
+  }
+
+  const stored = window.localStorage.getItem(SIDEBAR_PREFERENCES_KEY);
+  if (!stored) {
+    return defaultSidebarPreferences;
+  }
+
+  try {
+    const parsed = JSON.parse(stored) as Partial<SidebarPreferences>;
+    return {
+      searchText: typeof parsed.searchText === "string" ? parsed.searchText : "",
+      selectedTags: Array.isArray(parsed.selectedTags)
+        ? parsed.selectedTags.filter((tag): tag is string => typeof tag === "string")
+        : [],
+      sortMode: isSortMode(parsed.sortMode) ? parsed.sortMode : defaultSidebarPreferences.sortMode,
+      sortDirection: isSortDirection(parsed.sortDirection)
+        ? parsed.sortDirection
+        : defaultSidebarPreferences.sortDirection,
+    };
+  } catch {
+    return defaultSidebarPreferences;
+  }
+}
 
 function folderExists(items: FileSystemItem[], path: string): boolean {
   for (const item of items) {
@@ -63,6 +119,25 @@ function folderExists(items: FileSystemItem[], path: string): boolean {
     }
   }
   return false;
+}
+
+function findFolderByPath(items: FileSystemItem[], path: string): FolderItem | null {
+  for (const item of items) {
+    if (item.type !== "folder") {
+      continue;
+    }
+
+    if (item.path === path) {
+      return item;
+    }
+
+    const nested = findFolderByPath(item.children, path);
+    if (nested) {
+      return nested;
+    }
+  }
+
+  return null;
 }
 
 function collectNoteIds(items: FileSystemItem[]): Set<string> {
@@ -111,16 +186,21 @@ function mergeMetadataIntoItems(
       };
     }
 
-    const metadata = normalizeNoteMetadata(noteMetadataById[item.id] ?? item);
+    const metadata = noteMetadataById[item.id] ?? noteMetadataFromNote(item);
     return {
       ...item,
       subject: metadata.subject,
       tags: metadata.tags,
-      updatedAt: metadata.updatedAt,
     };
   });
 }
 
+function noteMetadataFromNote(note: Pick<Note, "subject" | "tags">): NoteMetadata {
+  return normalizeNoteMetadata({
+    subject: note.subject,
+    tags: note.tags,
+  });
+}
 function collectNoteIdsInFolder(items: FileSystemItem[], folderPath: string): string[] {
   const result: string[] = [];
 
@@ -234,11 +314,6 @@ function removeSetValues(current: Set<string>, noteIds: Set<string>): Set<string
 }
 
 function App() {
-  const SIDEBAR_WIDTH_KEY = "gravity.sidebarWidth";
-  const SIDEBAR_MIN_WIDTH = 200;
-  const SIDEBAR_COLLAPSED_WIDTH = 64;
-  const SIDEBAR_MAX_RATIO = 0.6;
-
   const [notesDirectory, setNotesDirectory] = useState(getNotesDirectory());
   const [notes, setNotes] = useState<FileSystemItem[]>([]);
   const [templates, setTemplates] = useState<TemplateSummary[]>([]);
@@ -251,8 +326,10 @@ function App() {
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [isLoading, setIsLoading] = useState(false);
   const [selectedFolderPath, setSelectedFolderPath] = useState<string | null>(null);
-  const [selectedTagFilters, setSelectedTagFilters] = useState<string[]>([]);
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
+  const [sidebarPreferences, setSidebarPreferences] = useState<SidebarPreferences>(() =>
+    readSidebarPreferences()
+  );
   const [sidebarWidth, setSidebarWidth] = useState(() => {
     if (typeof window === "undefined") {
       return 280;
@@ -353,6 +430,7 @@ function App() {
     setNoteMetadataById((current) => remapRecordValues(current, mapping));
     setNoteViewModes((current) => remapRecordValues(current, mapping));
     setLoadingNoteIds((current) => remapSetValues(current, mapping));
+    loadingRef.current = remapSetValues(loadingRef.current, mapping);
   }, []);
 
   const removeNotesFromState = useCallback((noteIds: string[]) => {
@@ -366,6 +444,7 @@ function App() {
     setNoteMetadataById((current) => removeRecordKeys(current, removed));
     setNoteViewModes((current) => removeRecordKeys(current, removed));
     setLoadingNoteIds((current) => removeSetValues(current, removed));
+    loadingRef.current = removeSetValues(loadingRef.current, removed);
   }, []);
 
   const refreshTemplates = useCallback(async () => {
@@ -389,7 +468,7 @@ function App() {
       setNoteMetadataById({});
       setNoteViewModes({});
       setLoadingNoteIds(new Set());
-      setSelectedTagFilters([]);
+      loadingRef.current = new Set();
       return;
     }
 
@@ -406,6 +485,7 @@ function App() {
       const flatNotes = flattenNotes(entries);
 
       setLoadingNoteIds(new Set(flatNotes.map((note) => note.id)));
+      loadingRef.current = new Set(flatNotes.map((note) => note.id));
 
       const settledDocuments = await Promise.allSettled(
         flatNotes.map(async (note) => {
@@ -429,10 +509,7 @@ function App() {
 
         if (result.status === "fulfilled") {
           nextContents[note.id] = result.value.document.body;
-          nextMetadataById[note.id] = normalizeNoteMetadata({
-            ...result.value.document.metadata,
-            updatedAt: note.updatedAt,
-          });
+          nextMetadataById[note.id] = normalizeNoteMetadata(result.value.document.metadata);
           return;
         }
 
@@ -446,7 +523,9 @@ function App() {
       setTemplates(templateSummaries);
       setTrashEntries(trash);
       setSelectedFolderPath((current) => {
-        if (!current) return current;
+        if (!current) {
+          return current;
+        }
         return folderExists(entries, current) ? current : null;
       });
 
@@ -467,6 +546,7 @@ function App() {
         setLoadingNoteIds((current) => removeSetValues(current, removedIds));
       }
 
+      loadingRef.current = new Set();
       setNoteContents(nextContents);
       setNoteMetadataById(nextMetadataById);
       setLoadingNoteIds(new Set());
@@ -488,6 +568,7 @@ function App() {
       markStartupError("vault.refresh.failed", { message });
       setErrorMessage("Unable to load notes. Check folder permissions.");
       setLoadingNoteIds(new Set());
+      loadingRef.current = new Set();
     } finally {
       setIsLoading(false);
     }
@@ -538,15 +619,34 @@ function App() {
   }, []);
 
   useEffect(() => {
-    if (sidebarCollapsed) return;
+    if (sidebarCollapsed) {
+      return;
+    }
     window.localStorage.setItem(SIDEBAR_WIDTH_KEY, sidebarWidth.toString());
   }, [sidebarCollapsed, sidebarWidth]);
 
   useEffect(() => {
-    const availableTagKeys = new Set(availableTags.map((tag) => tag.toLocaleLowerCase()));
-    setSelectedTagFilters((current) =>
-      current.filter((tag) => availableTagKeys.has(normalizeTag(tag).toLocaleLowerCase()))
+    window.localStorage.setItem(SIDEBAR_PREFERENCES_KEY, JSON.stringify(sidebarPreferences));
+  }, [sidebarPreferences]);
+
+  useEffect(() => {
+    const availableTagKeys = new Set(
+      availableTags.map((tag) => normalizeTag(tag).toLocaleLowerCase())
     );
+    setSidebarPreferences((current) => {
+      const selectedTags = current.selectedTags.filter((tag) =>
+        availableTagKeys.has(normalizeTag(tag).toLocaleLowerCase())
+      );
+
+      if (selectedTags.length === current.selectedTags.length) {
+        return current;
+      }
+
+      return {
+        ...current,
+        selectedTags,
+      };
+    });
   }, [availableTags]);
 
   const handleOpenVault = async () => {
@@ -556,12 +656,12 @@ function App() {
       if (directory) {
         setNotesDirectory(directory);
         setSelectedFolderPath(null);
-        setSelectedTagFilters([]);
         dispatchPane({ type: "reset" });
         setNoteContents({});
         setNoteMetadataById({});
         setNoteViewModes({});
         setLoadingNoteIds(new Set());
+        loadingRef.current = new Set();
         setTemplates([]);
       }
     } catch (error) {
@@ -582,7 +682,9 @@ function App() {
       ) {
         return;
       }
-      if (loadingRef.current.has(noteId)) return;
+      if (loadingRef.current.has(noteId)) {
+        return;
+      }
 
       loadingRef.current.add(noteId);
       setLoadingNoteIds((current) => new Set(current).add(noteId));
@@ -593,10 +695,7 @@ function App() {
         setNoteContents((current) => ({ ...current, [noteId]: document.body }));
         setNoteMetadataById((current) => ({
           ...current,
-          [noteId]: normalizeNoteMetadata({
-            ...document.metadata,
-            updatedAt: current[noteId]?.updatedAt ?? note.updatedAt,
-          }),
+          [noteId]: normalizeNoteMetadata(document.metadata),
         }));
       } catch (error) {
         console.error(error);
@@ -670,6 +769,10 @@ function App() {
   };
 
   const handleDeleteNote = async (note: Note) => {
+    if (!window.confirm(`Move "${note.title}" to trash?`)) {
+      return;
+    }
+
     setErrorMessage(null);
     try {
       await deleteNote(note.path);
@@ -724,6 +827,12 @@ function App() {
   };
 
   const handleDeleteFolder = async (folderPath: string) => {
+    const folder = findFolderByPath(notes, folderPath);
+    const folderLabel = folder?.name ?? folderPath;
+    if (!window.confirm(`Move folder "${folderLabel}" and its contents to trash?`)) {
+      return;
+    }
+
     setErrorMessage(null);
     try {
       const noteIds = collectNoteIdsInFolder(notes, folderPath);
@@ -754,6 +863,10 @@ function App() {
   };
 
   const handlePermanentDeleteTrashEntry = async (entry: TrashEntry) => {
+    if (!window.confirm(`Permanently delete "${entry.name}"? This cannot be undone.`)) {
+      return;
+    }
+
     setErrorMessage(null);
     try {
       await permanentlyDeleteTrashEntry(entry.id);
@@ -802,7 +915,7 @@ function App() {
     try {
       const markdown = serializeNoteDocument({
         body: value,
-        metadata: normalizeNoteMetadata(noteMetadataByIdRef.current[note.id] ?? note),
+        metadata: noteMetadataByIdRef.current[note.id] ?? noteMetadataFromNote(note),
       });
       await createTemplateFromNote(note.title, markdown);
       await refreshTemplates();
@@ -814,7 +927,9 @@ function App() {
 
   const handleAutoSave = async (noteId: string, nextDocument: NoteDocument) => {
     const note = getNoteById(noteId);
-    if (!note) return;
+    if (!note) {
+      return;
+    }
 
     const updatedMetadata = normalizeNoteMetadata({
       ...nextDocument.metadata,
@@ -866,8 +981,12 @@ function App() {
   };
 
   const handleSidebarPointerDown = (event: ReactPointerEvent<HTMLDivElement>) => {
-    if (event.button !== 0) return;
-    if ((event.target as HTMLElement).closest("button")) return;
+    if (event.button !== 0) {
+      return;
+    }
+    if ((event.target as HTMLElement).closest("button")) {
+      return;
+    }
     event.preventDefault();
 
     if (sidebarCollapsed) {
@@ -877,7 +996,9 @@ function App() {
     resizeStateRef.current = { startX: event.clientX, startWidth: sidebarWidth };
 
     const handlePointerMove = (moveEvent: PointerEvent) => {
-      if (!resizeStateRef.current) return;
+      if (!resizeStateRef.current) {
+        return;
+      }
       const maxWidth = Math.floor(window.innerWidth * SIDEBAR_MAX_RATIO);
       const nextWidth =
         resizeStateRef.current.startWidth + (moveEvent.clientX - resizeStateRef.current.startX);
@@ -913,8 +1034,9 @@ function App() {
             trashEntries={trashEntries}
             selectedNoteId={activeNoteId}
             selectedFolderPath={selectedFolderPath}
+            sidebarPreferences={sidebarPreferences}
             availableTags={availableTags}
-            selectedTags={selectedTagFilters}
+            onSidebarPreferencesChange={setSidebarPreferences}
             onOpenVault={() => {
               void handleOpenVault();
             }}
@@ -965,21 +1087,6 @@ function App() {
             }}
             onPermanentlyDeleteTrashEntry={(entry) => {
               void handlePermanentDeleteTrashEntry(entry);
-            }}
-            onToggleTagFilter={(tag) => {
-              setSelectedTagFilters((current) => {
-                const normalized = normalizeTag(tag).toLocaleLowerCase();
-                return current.some(
-                  (entry) => normalizeTag(entry).toLocaleLowerCase() === normalized
-                )
-                  ? current.filter(
-                      (entry) => normalizeTag(entry).toLocaleLowerCase() !== normalized
-                    )
-                  : [...current, tag];
-              });
-            }}
-            onClearTagFilters={() => {
-              setSelectedTagFilters([]);
             }}
             errorMessage={errorMessage}
           />

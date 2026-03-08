@@ -5,23 +5,45 @@ import {
   useRef,
   useState,
   type CSSProperties,
+  type Dispatch,
   type FormEvent,
+  type SetStateAction,
 } from "react";
 import { buildFilenameSearchResults } from "../services/notesService";
 import { recordStartupEvent } from "../state/startupDiagnostics";
-import type { FileSystemItem, FolderItem, Note, TrashEntry } from "../types/notes";
+import type {
+  FileSystemItem,
+  FolderItem,
+  Note,
+  SidebarPreferences,
+  TrashEntry,
+} from "../types/notes";
 import type { TemplateSummary } from "../types/templates";
 import { normalizeNoteMetadata, normalizeTag } from "../utils/frontmatter";
+
+const DEFAULT_SIDEBAR_PREFERENCES: SidebarPreferences = {
+  searchText: "",
+  selectedTags: [],
+  sortMode: "updated",
+  sortDirection: "desc",
+};
+
+const collator = new Intl.Collator(undefined, {
+  numeric: true,
+  sensitivity: "base",
+});
 
 interface NoteListProps {
   directoryPath: string;
   notes: FileSystemItem[];
   templates?: TemplateSummary[];
-  trashEntries: TrashEntry[];
+  trashEntries?: TrashEntry[];
   selectedNoteId: string | null;
   selectedFolderPath: string | null;
+  sidebarPreferences?: SidebarPreferences;
   availableTags?: string[];
   selectedTags?: string[];
+  onSidebarPreferencesChange?: Dispatch<SetStateAction<SidebarPreferences>>;
   onOpenVault: () => void;
   onCreateNote: (title: string, templatePath: string | null) => void;
   onRenameNote: (note: Note, title: string) => void;
@@ -138,13 +160,80 @@ function formatTemplateUpdatedAt(updatedAt: number): string {
   }).format(updatedAt);
 }
 
+function compareFolders(left: FolderItem, right: FolderItem): number {
+  const byName = collator.compare(left.name, right.name);
+  if (byName !== 0) {
+    return byName;
+  }
+  return collator.compare(left.path, right.path);
+}
+
+function compareNotes(
+  left: Note,
+  right: Note,
+  preferences: Pick<SidebarPreferences, "sortMode" | "sortDirection">
+): number {
+  if (preferences.sortMode === "updated") {
+    const direction = preferences.sortDirection === "asc" ? 1 : -1;
+    const byUpdated = (left.updatedAt - right.updatedAt) * direction;
+    if (byUpdated !== 0) {
+      return byUpdated;
+    }
+
+    const byName = collator.compare(left.title, right.title);
+    if (byName !== 0) {
+      return byName;
+    }
+
+    return collator.compare(left.path, right.path);
+  }
+
+  const direction = preferences.sortDirection === "asc" ? 1 : -1;
+  const byName = collator.compare(left.title, right.title) * direction;
+  if (byName !== 0) {
+    return byName;
+  }
+
+  return collator.compare(left.path, right.path) * direction;
+}
+
+function sortNotesTree(
+  items: FileSystemItem[],
+  preferences: Pick<SidebarPreferences, "sortMode" | "sortDirection">
+): FileSystemItem[] {
+  const folders: FolderItem[] = [];
+  const notes: Extract<FileSystemItem, { type: "file" }>[] = [];
+
+  items.forEach((item) => {
+    if (item.type === "folder") {
+      folders.push({
+        ...item,
+        children: sortNotesTree(item.children, preferences),
+      });
+    } else {
+      notes.push(item);
+    }
+  });
+
+  folders.sort(compareFolders);
+  notes.sort((left, right) => compareNotes(left, right, preferences));
+
+  return [...folders, ...notes];
+}
+
+function metadataFromNote(note: Pick<Note, "subject" | "tags">) {
+  return normalizeNoteMetadata({
+    subject: note.subject,
+    tags: note.tags,
+  });
+}
 function noteMatchesSelectedTags(note: Note, selectedTags: string[]): boolean {
   if (selectedTags.length === 0) {
     return true;
   }
 
   const noteTags = new Set(
-    normalizeNoteMetadata(note).tags.map((tag) => normalizeTag(tag).toLocaleLowerCase())
+    metadataFromNote(note).tags.map((tag) => normalizeTag(tag).toLocaleLowerCase())
   );
   return selectedTags.every((tag) => noteTags.has(normalizeTag(tag).toLocaleLowerCase()));
 }
@@ -266,11 +355,13 @@ export function NoteList({
   directoryPath,
   notes,
   templates = [],
-  trashEntries,
+  trashEntries = [],
   selectedNoteId,
   selectedFolderPath,
+  sidebarPreferences,
   availableTags = [],
   selectedTags = [],
+  onSidebarPreferencesChange,
   onOpenVault,
   onCreateNote,
   onRenameNote,
@@ -300,7 +391,6 @@ export function NoteList({
   const [expandedFolders, setExpandedFolders] = useState<Set<string>>(() => new Set());
   const [editingTemplatePath, setEditingTemplatePath] = useState<string | null>(null);
   const [editingTemplateName, setEditingTemplateName] = useState("");
-  const [searchQuery, setSearchQuery] = useState("");
   const [showTrash, setShowTrash] = useState(true);
   const [contextMenu, setContextMenu] = useState<{
     target: ContextTarget;
@@ -308,14 +398,34 @@ export function NoteList({
     y: number;
   } | null>(null);
 
+  const effectiveSidebarPreferences = useMemo<SidebarPreferences>(() => {
+    const base = sidebarPreferences ?? {
+      ...DEFAULT_SIDEBAR_PREFERENCES,
+      selectedTags,
+    };
+
+    return {
+      searchText: base.searchText,
+      selectedTags: normalizeNoteMetadata({ tags: base.selectedTags }).tags,
+      sortMode: base.sortMode,
+      sortDirection: base.sortDirection,
+    };
+  }, [selectedTags, sidebarPreferences]);
+
+  const updateSidebarPreferences = useCallback(
+    (updater: SetStateAction<SidebarPreferences>) => {
+      if (onSidebarPreferencesChange) {
+        onSidebarPreferencesChange(updater);
+      }
+    },
+    [onSidebarPreferencesChange]
+  );
+
   const normalizedAvailableTags = useMemo(
     () => normalizeNoteMetadata({ tags: availableTags }).tags,
     [availableTags]
   );
-  const normalizedSelectedTags = useMemo(
-    () => normalizeNoteMetadata({ tags: selectedTags }).tags,
-    [selectedTags]
-  );
+  const normalizedSelectedTags = effectiveSidebarPreferences.selectedTags;
   const canCreate = Boolean(directoryPath && newTitle.trim());
   const canCreateFolder = Boolean(directoryPath && newFolderName.trim());
   const canCreateTemplate = Boolean(directoryPath && newTemplateName.trim());
@@ -325,14 +435,28 @@ export function NoteList({
     : "";
   const isContextMenuOpen = contextMenu !== null;
 
+  const scopedNotes = useMemo(() => {
+    if (!selectedFolderPath) {
+      return notes;
+    }
+
+    const folder = findFolderByPath(notes, selectedFolderPath);
+    return folder ? [folder] : [];
+  }, [notes, selectedFolderPath]);
+
   const filteredNotes = useMemo(
-    () => filterNotesTree(notes, normalizedSelectedTags),
-    [normalizedSelectedTags, notes]
+    () => filterNotesTree(scopedNotes, normalizedSelectedTags),
+    [normalizedSelectedTags, scopedNotes]
+  );
+
+  const sortedNotes = useMemo(
+    () => sortNotesTree(filteredNotes, effectiveSidebarPreferences),
+    [effectiveSidebarPreferences, filteredNotes]
   );
 
   const { totalNotes, folderNoteCounts } = useMemo(
-    () => buildNotesTreeStats(filteredNotes),
-    [filteredNotes]
+    () => buildNotesTreeStats(sortedNotes),
+    [sortedNotes]
   );
 
   const folderOptions = useMemo(
@@ -341,18 +465,23 @@ export function NoteList({
   );
 
   const searchResults = useMemo(
-    () => buildFilenameSearchResults(filteredNotes, searchQuery, directoryPath),
-    [directoryPath, filteredNotes, searchQuery]
+    () =>
+      buildFilenameSearchResults(
+        sortedNotes,
+        effectiveSidebarPreferences.searchText,
+        directoryPath
+      ),
+    [directoryPath, effectiveSidebarPreferences.searchText, sortedNotes]
   );
 
   const prunedExpandedFolders = useMemo(
-    () => pruneExpandedFolders(expandedFolders, filteredNotes),
-    [expandedFolders, filteredNotes]
+    () => pruneExpandedFolders(expandedFolders, sortedNotes),
+    [expandedFolders, sortedNotes]
   );
 
   const effectiveExpandedFolders = useMemo(
-    () => expandFoldersForNoteSelection(filteredNotes, prunedExpandedFolders, selectedNoteId),
-    [filteredNotes, prunedExpandedFolders, selectedNoteId]
+    () => expandFoldersForNoteSelection(sortedNotes, prunedExpandedFolders, selectedNoteId),
+    [sortedNotes, prunedExpandedFolders, selectedNoteId]
   );
 
   const selectedFolderLabel = useMemo(() => {
@@ -525,9 +654,63 @@ export function NoteList({
     }, 0);
   };
 
+  const handleTagToggle = (tag: string) => {
+    if (onSidebarPreferencesChange) {
+      updateSidebarPreferences((current) => {
+        const normalized = normalizeTag(tag).toLocaleLowerCase();
+        return {
+          ...current,
+          selectedTags: current.selectedTags.some(
+            (entry) => normalizeTag(entry).toLocaleLowerCase() === normalized
+          )
+            ? current.selectedTags.filter(
+                (entry) => normalizeTag(entry).toLocaleLowerCase() !== normalized
+              )
+            : [...current.selectedTags, tag],
+        };
+      });
+      return;
+    }
+
+    onToggleTagFilter(tag);
+  };
+
+  const handleClearTagFilters = () => {
+    if (onSidebarPreferencesChange) {
+      updateSidebarPreferences((current) => ({
+        ...current,
+        selectedTags: [],
+      }));
+      return;
+    }
+
+    onClearTagFilters();
+  };
+
+  const handleSearchChange = (searchText: string) => {
+    updateSidebarPreferences((current) => ({
+      ...current,
+      searchText,
+    }));
+  };
+
+  const handleSortModeChange = (sortMode: SidebarPreferences["sortMode"]) => {
+    updateSidebarPreferences((current) => ({
+      ...current,
+      sortMode,
+    }));
+  };
+
+  const handleSortDirectionChange = (sortDirection: SidebarPreferences["sortDirection"]) => {
+    updateSidebarPreferences((current) => ({
+      ...current,
+      sortDirection,
+    }));
+  };
+
   const renderNoteRow = (note: Note, depth: number, folderLabel?: string) => {
     const depthStyle = { "--depth": depth } as CSSProperties;
-    const metadata = normalizeNoteMetadata(note);
+    const metadata = metadataFromNote(note);
     const metadataLine =
       metadata.subject || metadata.tags.length > 0
         ? [metadata.subject, metadata.tags.map((tag) => `#${tag}`).join(" ")]
@@ -624,7 +807,7 @@ export function NoteList({
                 onClick={() => {
                   if (!hasChildren) return;
                   setExpandedFolders((current) =>
-                    toggleExpandedFolder(pruneExpandedFolders(current, notes), item.path)
+                    toggleExpandedFolder(pruneExpandedFolders(current, sortedNotes), item.path)
                   );
                 }}
                 aria-label={`${isExpanded ? "Collapse" : "Expand"} ${item.name}`}
@@ -638,7 +821,7 @@ export function NoteList({
                 onClick={() => {
                   onSelectFolder(item.path);
                   setExpandedFolders((current) => {
-                    const prunedCurrent = pruneExpandedFolders(current, notes);
+                    const prunedCurrent = pruneExpandedFolders(current, sortedNotes);
                     if (prunedCurrent.has(item.path)) {
                       return prunedCurrent;
                     }
@@ -702,9 +885,9 @@ export function NoteList({
         <input
           className="input"
           placeholder="Search filenames"
-          value={searchQuery}
+          value={effectiveSidebarPreferences.searchText}
           onChange={(event) => {
-            setSearchQuery(event.target.value);
+            handleSearchChange(event.target.value);
           }}
         />
       )}
@@ -782,7 +965,7 @@ export function NoteList({
               <p className="note-list__filters-copy">All selected tags must match.</p>
             </div>
             {normalizedSelectedTags.length > 0 && (
-              <button className="note-list__link" type="button" onClick={onClearTagFilters}>
+              <button className="note-list__link" type="button" onClick={handleClearTagFilters}>
                 Clear filters
               </button>
             )}
@@ -801,13 +984,60 @@ export function NoteList({
                   className={`note-list__tag-filter ${isActive ? "note-list__tag-filter--active" : ""}`}
                   type="button"
                   onClick={() => {
-                    onToggleTagFilter(tag);
+                    handleTagToggle(tag);
                   }}
                 >
                   #{tag}
                 </button>
               );
             })}
+          </div>
+        </div>
+      )}
+
+      {directoryPath && (
+        <div className="note-list__filters note-list__filters--sorting">
+          <div className="note-list__filters-header">
+            <div>
+              <p className="note-list__selection-label">Sort Notes</p>
+              <p className="note-list__filters-copy">
+                Folders stay alphabetical; notes use your selected order.
+              </p>
+            </div>
+          </div>
+          <div className="note-list__sort-controls">
+            <label className="note-list__sort-field">
+              <span className="note-list__selection-label">Sort by</span>
+              <select
+                className="input select"
+                value={effectiveSidebarPreferences.sortMode}
+                onChange={(event) => {
+                  handleSortModeChange(event.target.value as SidebarPreferences["sortMode"]);
+                }}
+              >
+                <option value="updated">Updated</option>
+                <option value="name">Name</option>
+              </select>
+            </label>
+            <label className="note-list__sort-field">
+              <span className="note-list__selection-label">Direction</span>
+              <select
+                className="input select"
+                value={effectiveSidebarPreferences.sortDirection}
+                onChange={(event) => {
+                  handleSortDirectionChange(
+                    event.target.value as SidebarPreferences["sortDirection"]
+                  );
+                }}
+              >
+                <option value="desc">
+                  {effectiveSidebarPreferences.sortMode === "updated" ? "Newest first" : "Z to A"}
+                </option>
+                <option value="asc">
+                  {effectiveSidebarPreferences.sortMode === "updated" ? "Oldest first" : "A to Z"}
+                </option>
+              </select>
+            </label>
           </div>
         </div>
       )}
@@ -930,7 +1160,7 @@ export function NoteList({
 
       {errorMessage && <p className="note-list__error">{errorMessage}</p>}
 
-      {directoryPath && searchQuery.trim() ? (
+      {directoryPath && effectiveSidebarPreferences.searchText.trim() ? (
         <div className="note-list__results">
           <p className="note-list__section-label">Search Results</p>
           <ul className="note-list__items">
@@ -949,15 +1179,17 @@ export function NoteList({
         </div>
       ) : (
         directoryPath && (
-          <ul className="note-list__items">
+          <ul className="note-list__items note-list__items--scrollable">
             {totalNotes === 0 && (
               <li className="note-list__empty">
                 {normalizedSelectedTags.length > 0
-                  ? "No notes match the selected tags."
-                  : "No notes yet. Create the first one."}
+                  ? "No notes match the current filters."
+                  : notes.length === 0
+                    ? "No notes yet. Create the first one."
+                    : "No notes match the current filters."}
               </li>
             )}
-            {renderItems(filteredNotes)}
+            {renderItems(sortedNotes)}
           </ul>
         )
       )}

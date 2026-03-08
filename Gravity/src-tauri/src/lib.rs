@@ -1,3 +1,4 @@
+use chrono::{DateTime, NaiveDate, NaiveDateTime, TimeZone, Utc};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::fs;
@@ -16,11 +17,24 @@ struct VaultState {
     selected_path: Mutex<Option<PathBuf>>,
 }
 
+#[derive(Clone, Copy, Serialize)]
+enum UpdatedAtSource {
+    #[serde(rename = "frontmatter")]
+    Frontmatter,
+    #[serde(rename = "filesystem")]
+    Filesystem,
+}
+
 #[derive(Serialize)]
 struct Note {
     id: String,
     title: String,
     path: String,
+    tags: Vec<String>,
+    #[serde(rename = "updatedAt")]
+    updated_at: i64,
+    #[serde(rename = "updatedAtSource")]
+    updated_at_source: UpdatedAtSource,
 }
 
 #[derive(Serialize)]
@@ -37,7 +51,16 @@ struct FolderItem {
 #[serde(tag = "type")]
 enum FileSystemItem {
     #[serde(rename = "file")]
-    File { id: String, title: String, path: String },
+    File {
+        id: String,
+        title: String,
+        path: String,
+        tags: Vec<String>,
+        #[serde(rename = "updatedAt")]
+        updated_at: i64,
+        #[serde(rename = "updatedAtSource")]
+        updated_at_source: UpdatedAtSource,
+    },
     #[serde(rename = "folder")]
     Folder {
         id: String,
@@ -45,6 +68,12 @@ enum FileSystemItem {
         path: String,
         children: Vec<FileSystemItem>,
     },
+}
+
+#[derive(Default)]
+struct ParsedFrontmatter {
+    updated_at: Option<i64>,
+    tags: Vec<String>,
 }
 
 #[derive(Serialize, Deserialize, Clone, Copy)]
@@ -134,6 +163,154 @@ fn strip_markdown_extension(name: &str) -> &str {
 
 fn normalize_markdown(content: &str) -> String {
     content.replace("\r\n", "\n")
+}
+
+fn timestamp_from_system_time(time: SystemTime) -> i64 {
+    match time.duration_since(UNIX_EPOCH) {
+        Ok(duration) => duration.as_millis() as i64,
+        Err(_) => 0,
+    }
+}
+
+fn modified_timestamp(metadata: &fs::Metadata) -> i64 {
+    metadata
+        .modified()
+        .map(timestamp_from_system_time)
+        .unwrap_or_default()
+}
+
+fn push_unique_tag(tags: &mut Vec<String>, raw_value: &str) {
+    let trimmed = raw_value
+        .trim()
+        .trim_matches('"')
+        .trim_matches('\'')
+        .trim()
+        .trim_start_matches('#');
+    if trimmed.is_empty() {
+        return;
+    }
+
+    if tags.iter().any(|tag| tag.eq_ignore_ascii_case(trimmed)) {
+        return;
+    }
+
+    tags.push(trimmed.to_string());
+}
+
+fn collect_inline_tags(value: &str, tags: &mut Vec<String>) {
+    let trimmed = value.trim();
+    if trimmed.is_empty() {
+        return;
+    }
+
+    if trimmed.starts_with('[') && trimmed.ends_with(']') {
+        let inner = &trimmed[1..trimmed.len() - 1];
+        for part in inner.split(',') {
+            push_unique_tag(tags, part);
+        }
+        return;
+    }
+
+    for part in trimmed.split(',') {
+        push_unique_tag(tags, part);
+    }
+}
+
+fn parse_frontmatter_timestamp(value: &str) -> Option<i64> {
+    let trimmed = value.trim().trim_matches('"').trim_matches('\'').trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+
+    if let Ok(date_time) = DateTime::parse_from_rfc3339(trimmed) {
+        return Some(date_time.timestamp_millis());
+    }
+
+    if let Ok(date_time) = NaiveDateTime::parse_from_str(trimmed, "%Y-%m-%d %H:%M:%S") {
+        return Some(Utc.from_utc_datetime(&date_time).timestamp_millis());
+    }
+
+    if let Ok(date_time) = NaiveDateTime::parse_from_str(trimmed, "%Y-%m-%d %H:%M") {
+        return Some(Utc.from_utc_datetime(&date_time).timestamp_millis());
+    }
+
+    if let Ok(date) = NaiveDate::parse_from_str(trimmed, "%Y-%m-%d") {
+        return date
+            .and_hms_opt(0, 0, 0)
+            .map(|date_time| Utc.from_utc_datetime(&date_time).timestamp_millis());
+    }
+
+    None
+}
+
+fn parse_frontmatter(content: &str) -> ParsedFrontmatter {
+    let mut lines = content.lines();
+    let Some(first_line) = lines.next() else {
+        return ParsedFrontmatter::default();
+    };
+
+    if first_line.trim() != "---" {
+        return ParsedFrontmatter::default();
+    }
+
+    let mut frontmatter = ParsedFrontmatter::default();
+    let mut current_key: Option<&str> = None;
+
+    for line in lines {
+        let trimmed = line.trim();
+        if trimmed == "---" || trimmed == "..." {
+            break;
+        }
+
+        if let Some(value) = line
+            .strip_prefix("updatedAt:")
+            .or_else(|| line.strip_prefix("updated:"))
+        {
+            frontmatter.updated_at = parse_frontmatter_timestamp(value);
+            current_key = None;
+            continue;
+        }
+
+        if let Some(value) = line.strip_prefix("tags:") {
+            let trimmed_value = value.trim();
+            if trimmed_value.is_empty() {
+                current_key = Some("tags");
+            } else {
+                collect_inline_tags(trimmed_value, &mut frontmatter.tags);
+                current_key = None;
+            }
+            continue;
+        }
+
+        if current_key == Some("tags") {
+            if let Some(value) = trimmed.strip_prefix("- ") {
+                push_unique_tag(&mut frontmatter.tags, value);
+                continue;
+            }
+
+            if trimmed.is_empty() {
+                continue;
+            }
+
+            current_key = None;
+        }
+    }
+
+    frontmatter
+}
+
+fn build_note_metadata(note_path: &Path, metadata: &fs::Metadata) -> (Vec<String>, i64, UpdatedAtSource) {
+    let filesystem_timestamp = modified_timestamp(metadata);
+    let parsed = fs::read_to_string(note_path)
+        .ok()
+        .map(|content| parse_frontmatter(&content))
+        .unwrap_or_default();
+
+    if let Some(updated_at) = parsed.updated_at {
+        return (parsed.tags, updated_at, UpdatedAtSource::Frontmatter);
+    }
+
+    (parsed.tags, filesystem_timestamp, UpdatedAtSource::Filesystem)
 }
 
 fn canonicalize_directory(path: &Path) -> Result<PathBuf, String> {
@@ -518,13 +695,20 @@ fn metadata_updated_at(path: &Path) -> Result<u64, String> {
         .map_err(|_| format!("Modified time is out of range for {}", path.display()))
 }
 
-fn build_note(path: &Path) -> Note {
+fn build_note(path: &Path) -> Result<Note, String> {
     let path_string = path_to_string(path);
-    Note {
+    let metadata = fs::metadata(path)
+        .map_err(|error| format!("Unable to read file metadata for {}: {error}", path.display()))?;
+    let (tags, updated_at, updated_at_source) = build_note_metadata(path, &metadata);
+
+    Ok(Note {
         id: path_string.clone(),
         title: file_title_from_path(path),
         path: path_string,
-    }
+        tags,
+        updated_at,
+        updated_at_source,
+    })
 }
 
 fn build_folder_item(vault_path: &Path, path: &Path) -> Result<FolderItem, String> {
@@ -637,10 +821,18 @@ fn list_directory_entries(vault_path: &Path, directory: &Path) -> Result<Vec<Fil
                 children,
             });
         } else if file_type.is_file() && is_markdown_file(&entry_name) {
+            let metadata = entry
+                .metadata()
+                .map_err(|error| format!("Failed to read metadata for {}: {error}", entry_name))?;
+            let (tags, updated_at, updated_at_source) =
+                build_note_metadata(&entry_path, &metadata);
             items.push(FileSystemItem::File {
                 id: path_to_string(&entry_path),
                 title: strip_markdown_extension(&entry_name).to_string(),
                 path: path_to_string(&entry_path),
+                tags,
+                updated_at,
+                updated_at_source,
             });
         }
     }
@@ -937,7 +1129,7 @@ fn create_note(
     let note_path = find_available_path(&desired_path, true);
     fs::write(&note_path, normalize_markdown(&initial_content))
         .map_err(|error| format!("Unable to create note at {}: {error}", note_path.display()))?;
-    Ok(build_note(&note_path))
+    build_note(&note_path)
 }
 
 #[tauri::command]
@@ -957,7 +1149,7 @@ fn rename_note(path: String, title: String, state: tauri::State<VaultState>) -> 
         find_available_path(&desired_path, true)
     };
     if next_path == note_path {
-        return Ok(build_note(&note_path));
+        return build_note(&note_path);
     }
     fs::rename(&note_path, &next_path).map_err(|error| {
         format!(
@@ -967,7 +1159,7 @@ fn rename_note(path: String, title: String, state: tauri::State<VaultState>) -> 
         )
     })?;
     move_note_sidecar(&note_path, &next_path)?;
-    Ok(build_note(&next_path))
+    build_note(&next_path)
 }
 
 #[tauri::command]
@@ -985,7 +1177,7 @@ fn move_note(path: String, folder_path: Option<String>, state: tauri::State<Vaul
         find_available_path(&desired_path, true)
     };
     if next_path == note_path {
-        return Ok(build_note(&note_path));
+        return build_note(&note_path);
     }
     fs::rename(&note_path, &next_path).map_err(|error| {
         format!(
@@ -995,7 +1187,7 @@ fn move_note(path: String, folder_path: Option<String>, state: tauri::State<Vaul
         )
     })?;
     move_note_sidecar(&note_path, &next_path)?;
-    Ok(build_note(&next_path))
+    build_note(&next_path)
 }
 
 #[tauri::command]
@@ -1337,6 +1529,8 @@ pub fn run() {
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
 }
+
+
 
 
 

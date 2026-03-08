@@ -11,6 +11,7 @@ import type {
   Note,
   NoteMetadata,
   NoteSearchResult,
+  NoteUpdatedSource,
   TemplateApplyMode,
   TemplateItem,
   TrashEntry,
@@ -30,6 +31,10 @@ function normalizeSelection(selection: string | string[] | null): string | null 
   return selection ?? null;
 }
 
+function normalizeUpdatedAtSource(source: unknown): NoteUpdatedSource {
+  return source === "frontmatter" ? "frontmatter" : "filesystem";
+}
+
 function normalizeNote(note: Pick<Note, "id" | "title" | "path"> & Partial<Note>): Note {
   return {
     id: note.id,
@@ -37,7 +42,9 @@ function normalizeNote(note: Pick<Note, "id" | "title" | "path"> & Partial<Note>
     path: note.path,
     subject: note.subject,
     tags: Array.isArray(note.tags) ? note.tags : [],
-    updatedAt: note.updatedAt,
+    updatedAt:
+      typeof note.updatedAt === "number" && Number.isFinite(note.updatedAt) ? note.updatedAt : 0,
+    updatedAtSource: normalizeUpdatedAtSource(note.updatedAtSource),
   };
 }
 

@@ -1,10 +1,19 @@
+export type NoteUpdatedSource = "frontmatter" | "filesystem";
+
+export type NoteSortMode = "name" | "updated";
+
+export type SortDirection = "asc" | "desc";
+
+export type TrashItemType = "file" | "folder";
+
 export interface Note {
   id: string;
   title: string;
   path: string;
   subject?: string;
   tags: string[];
-  updatedAt?: string;
+  updatedAt: number;
+  updatedAtSource: NoteUpdatedSource;
 }
 
 export interface NoteMetadata {
@@ -34,7 +43,7 @@ export interface TrashEntry {
   id: string;
   name: string;
   originalPath: string;
-  type: "file" | "folder";
+  type: TrashItemType;
   deletedAt: number;
 }
 
@@ -55,3 +64,10 @@ export interface NoteSearchResult {
 }
 
 export type FileSystemItem = NoteItem | FolderItem;
+
+export interface SidebarPreferences {
+  searchText: string;
+  selectedTags: string[];
+  sortMode: NoteSortMode;
+  sortDirection: SortDirection;
+}
