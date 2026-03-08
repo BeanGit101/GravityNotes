@@ -15,6 +15,7 @@ import {
 
 const services = vi.hoisted(() => ({
   listNotesWithFolders: vi.fn(async () => []),
+  listTemplates: vi.fn(async () => []),
   listTrashEntries: vi.fn(async () => []),
 }));
 
@@ -22,17 +23,23 @@ vi.mock("../src/services/notesService", () => ({
   buildFilenameSearchResults: () => [],
   createFolder: vi.fn(),
   createNote: vi.fn(),
+  createTemplate: vi.fn(),
+  createTemplateFromNote: vi.fn(),
   deleteFolder: vi.fn(),
   deleteNote: vi.fn(),
+  deleteTemplate: vi.fn(),
   getNotesDirectory: () => "/vault",
   listNotesWithFolders: services.listNotesWithFolders,
+  listTemplates: services.listTemplates,
   listTrashEntries: services.listTrashEntries,
   moveFolder: vi.fn(),
   moveNote: vi.fn(),
   permanentlyDeleteTrashEntry: vi.fn(),
   readNote: vi.fn(),
+  readTemplate: vi.fn(),
   renameFolder: vi.fn(),
   renameNote: vi.fn(),
+  renameTemplate: vi.fn(),
   restoreTrashEntry: vi.fn(),
   selectNotesDirectory: vi.fn(),
   updateNote: vi.fn(),

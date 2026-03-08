@@ -2,6 +2,7 @@ import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
 import { NoteList } from "../src/components/NoteList";
 import type { FileSystemItem, TrashEntry } from "../src/types/notes";
+import type { TemplateSummary } from "../src/types/templates";
 
 describe("NoteList rendering", () => {
   it("shows correct nested folder note count", () => {
@@ -38,12 +39,14 @@ describe("NoteList rendering", () => {
       },
     ];
 
+    const templates: TemplateSummary[] = [];
     const trashEntries: TrashEntry[] = [];
 
     const html = renderToStaticMarkup(
       <NoteList
         directoryPath="/vault"
         notes={notes}
+        templates={templates}
         trashEntries={trashEntries}
         selectedNoteId={null}
         selectedFolderPath={null}
@@ -54,6 +57,9 @@ describe("NoteList rendering", () => {
         onRenameNote={() => {}}
         onMoveNote={() => {}}
         onCreateFolder={() => {}}
+        onCreateTemplate={() => {}}
+        onRenameTemplate={() => {}}
+        onDeleteTemplate={() => {}}
         onRenameFolder={() => {}}
         onMoveFolder={() => {}}
         onDeleteFolder={() => {}}
@@ -71,6 +77,7 @@ describe("NoteList rendering", () => {
 
     expect(html).toContain("2 notes");
     expect(html).toContain("Trash");
+    expect(html).toContain("Reusable starts");
   });
 
   it("applies match-all tag filtering in the sidebar", () => {
@@ -91,12 +98,14 @@ describe("NoteList rendering", () => {
       },
     ];
 
+    const templates: TemplateSummary[] = [];
     const trashEntries: TrashEntry[] = [];
 
     const html = renderToStaticMarkup(
       <NoteList
         directoryPath="/vault"
         notes={notes}
+        templates={templates}
         trashEntries={trashEntries}
         selectedNoteId={null}
         selectedFolderPath={null}
@@ -107,6 +116,9 @@ describe("NoteList rendering", () => {
         onRenameNote={() => {}}
         onMoveNote={() => {}}
         onCreateFolder={() => {}}
+        onCreateTemplate={() => {}}
+        onRenameTemplate={() => {}}
+        onDeleteTemplate={() => {}}
         onRenameFolder={() => {}}
         onMoveFolder={() => {}}
         onDeleteFolder={() => {}}

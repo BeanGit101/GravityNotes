@@ -16,6 +16,7 @@ interface PaneContainerProps {
   onActivatePane: (paneId: string) => void;
   onClosePane: (paneId: string) => void;
   onToggleNoteViewMode: (noteId: string) => void;
+  onCreateTemplateFromNote: (note: Note, value: string) => void;
   onChangeNote: (noteId: string, value: string) => void;
   onChangeNoteMetadata: (noteId: string, metadata: NoteMetadata) => void;
   onAutoSaveNote: (noteId: string, value: NoteDocument) => Promise<void>;
@@ -72,6 +73,7 @@ export function PaneContainer({
   onActivatePane,
   onClosePane,
   onToggleNoteViewMode,
+  onCreateTemplateFromNote,
   onChangeNote,
   onChangeNoteMetadata,
   onAutoSaveNote,
@@ -123,6 +125,9 @@ export function PaneContainer({
               }}
               onToggleViewMode={() => {
                 onToggleNoteViewMode(pane.noteId);
+              }}
+              onCreateTemplateFromNote={(currentNote, currentValue) => {
+                onCreateTemplateFromNote(currentNote, currentValue);
               }}
               onChange={(nextValue) => {
                 onChangeNote(pane.noteId, nextValue);

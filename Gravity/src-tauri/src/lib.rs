@@ -8,7 +8,8 @@ use std::time::{SystemTime, UNIX_EPOCH};
 const TRASH_DIR_NAME: &str = ".gravity-trash";
 const TRASH_ITEMS_DIR_NAME: &str = "items";
 const TRASH_META_DIR_NAME: &str = "meta";
-const TEMPLATES_DIR_NAME: &str = ".gravity-templates";
+const APP_DIR_NAME: &str = ".gravity";
+const TEMPLATES_DIR_NAME: &str = "templates";
 
 #[derive(Default)]
 struct VaultState {
@@ -72,12 +73,41 @@ struct TrashEntry {
     deleted_at: u128,
 }
 
+#[derive(Clone, Serialize)]
+struct TemplateSummary {
+    id: String,
+    name: String,
+    path: String,
+    #[serde(rename = "updatedAt")]
+    updated_at: u64,
+}
+
+#[derive(Serialize)]
+struct TemplateContent {
+    id: String,
+    name: String,
+    path: String,
+    #[serde(rename = "updatedAt")]
+    updated_at: u64,
+    body: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    subject: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    tags: Option<Vec<String>>,
+}
+
 #[derive(Serialize)]
 struct TemplateItem {
     id: String,
     name: String,
     path: String,
     content: String,
+}
+
+struct ParsedTemplateSeed {
+    body: String,
+    subject: Option<String>,
+    tags: Option<Vec<String>>,
 }
 
 #[derive(Deserialize)]
@@ -90,6 +120,20 @@ enum TemplateApplyMode {
 
 fn path_to_string(path: &Path) -> String {
     path.to_string_lossy().into_owned()
+}
+
+fn is_markdown_file(name: &str) -> bool {
+    name.ends_with(".md") || name.ends_with(".MD")
+}
+
+fn strip_markdown_extension(name: &str) -> &str {
+    name.strip_suffix(".md")
+        .or_else(|| name.strip_suffix(".MD"))
+        .unwrap_or(name)
+}
+
+fn normalize_markdown(content: &str) -> String {
+    content.replace("\r\n", "\n")
 }
 
 fn canonicalize_directory(path: &Path) -> Result<PathBuf, String> {
@@ -123,20 +167,30 @@ fn trash_meta_directory(vault_path: &Path) -> PathBuf {
     trash_root(vault_path).join(TRASH_META_DIR_NAME)
 }
 
-fn templates_directory(vault_path: &Path) -> PathBuf {
-    vault_path.join(TEMPLATES_DIR_NAME)
+fn app_directory(vault_path: &Path) -> PathBuf {
+    vault_path.join(APP_DIR_NAME)
 }
 
-fn ensure_templates_layout(vault_path: &Path) -> Result<(), String> {
+fn templates_directory(vault_path: &Path) -> PathBuf {
+    app_directory(vault_path).join(TEMPLATES_DIR_NAME)
+}
+
+fn ensure_templates_layout(vault_path: &Path) -> Result<PathBuf, String> {
     let templates = templates_directory(vault_path);
-    fs::create_dir_all(&templates)
-        .map_err(|error| format!("Unable to create templates directory {}: {error}", templates.display()))
+    fs::create_dir_all(&templates).map_err(|error| {
+        format!(
+            "Unable to create templates directory {}: {error}",
+            templates.display()
+        )
+    })?;
+    canonicalize_directory(&templates)
 }
 
 fn ensure_template_file_in_vault(vault_path: &Path, path: &Path) -> Result<PathBuf, String> {
+    let templates_path = ensure_templates_layout(vault_path)?;
     let canonical = fs::canonicalize(path)
         .map_err(|error| format!("Unable to access template {}: {error}", path.display()))?;
-    if !canonical.starts_with(templates_directory(vault_path)) {
+    if !canonical.starts_with(&templates_path) {
         return Err(String::from(
             "Requested template is outside the managed templates directory.",
         ));
@@ -144,6 +198,18 @@ fn ensure_template_file_in_vault(vault_path: &Path, path: &Path) -> Result<PathB
     if !canonical.is_file() {
         return Err(format!("Template path is not a file: {}", canonical.display()));
     }
+
+    let file_name = canonical
+        .file_name()
+        .and_then(|value| value.to_str())
+        .ok_or_else(|| format!("Invalid template file name: {}", canonical.display()))?;
+    if !is_markdown_file(file_name) {
+        return Err(format!(
+            "Template must be a markdown file: {}",
+            canonical.display()
+        ));
+    }
+
     Ok(canonical)
 }
 
@@ -181,6 +247,10 @@ fn is_inside_trash(vault_path: &Path, path: &Path) -> bool {
     path.starts_with(trash_root(vault_path))
 }
 
+fn is_inside_app_directory(vault_path: &Path, path: &Path) -> bool {
+    path.starts_with(app_directory(vault_path))
+}
+
 fn ensure_directory_in_vault(vault_path: &Path, path: &Path) -> Result<PathBuf, String> {
     let canonical = canonicalize_directory(path)?;
     if !canonical.starts_with(vault_path) {
@@ -188,6 +258,11 @@ fn ensure_directory_in_vault(vault_path: &Path, path: &Path) -> Result<PathBuf, 
     }
     if is_inside_trash(vault_path, &canonical) {
         return Err(String::from("Requested folder is inside the app-managed trash."));
+    }
+    if is_inside_app_directory(vault_path, &canonical) {
+        return Err(String::from(
+            "Requested folder is inside the app-managed data directory.",
+        ));
     }
     Ok(canonical)
 }
@@ -200,6 +275,11 @@ fn ensure_file_in_vault(vault_path: &Path, path: &Path) -> Result<PathBuf, Strin
     }
     if is_inside_trash(vault_path, &canonical) {
         return Err(String::from("Requested file is inside the app-managed trash."));
+    }
+    if is_inside_app_directory(vault_path, &canonical) {
+        return Err(String::from(
+            "Requested file is inside the app-managed data directory.",
+        ));
     }
     if !canonical.is_file() {
         return Err(format!("Path is not a file: {}", canonical.display()));
@@ -251,6 +331,36 @@ fn note_file_name(title: &str) -> String {
     format!("{}.md", if slug.is_empty() { "untitled" } else { slug.as_str() })
 }
 
+fn sanitize_template_name(value: &str) -> String {
+    let mut output = String::new();
+    let mut previous_space = false;
+
+    for character in value.trim().chars() {
+        let mapped = match character {
+            '<' | '>' | ':' | '"' | '/' | '\\' | '|' | '?' | '*' => '-',
+            other if other.is_control() => '-',
+            other => other,
+        };
+
+        if mapped.is_whitespace() {
+            if !previous_space {
+                output.push(' ');
+                previous_space = true;
+            }
+        } else {
+            output.push(mapped);
+            previous_space = false;
+        }
+    }
+
+    let trimmed = output.trim_matches(|character| character == ' ' || character == '.');
+    if trimmed.is_empty() {
+        String::from("Untitled Template")
+    } else {
+        trimmed.to_string()
+    }
+}
+
 fn folder_name(name: &str) -> String {
     let slug = slugify(name);
     if slug.is_empty() {
@@ -258,6 +368,154 @@ fn folder_name(name: &str) -> String {
     } else {
         slug
     }
+}
+
+fn clean_optional_string(value: Option<String>) -> Option<String> {
+    value
+        .map(|entry| entry.trim().to_string())
+        .filter(|entry| !entry.is_empty())
+}
+
+fn clean_optional_tags(tags: Option<Vec<String>>) -> Option<Vec<String>> {
+    tags.map(|entries| {
+        entries
+            .into_iter()
+            .map(|entry| entry.trim().to_string())
+            .filter(|entry| !entry.is_empty())
+            .collect::<Vec<_>>()
+    })
+    .filter(|entries| !entries.is_empty())
+}
+
+fn serialize_template_markdown(seed: &ParsedTemplateSeed) -> String {
+    let subject = clean_optional_string(seed.subject.clone());
+    let tags = clean_optional_tags(seed.tags.clone());
+
+    if subject.is_none() && tags.is_none() {
+        return seed.body.clone();
+    }
+
+    let mut lines = vec![String::from("---")];
+
+    if let Some(subject) = subject {
+        lines.push(format!("subject: {subject}"));
+    }
+
+    if let Some(tags) = tags {
+        lines.push(String::from("tags:"));
+        for tag in tags {
+            lines.push(format!("  - {tag}"));
+        }
+    }
+
+    lines.push(String::from("---"));
+
+    if !seed.body.is_empty() {
+        lines.push(String::new());
+        lines.push(seed.body.clone());
+    }
+
+    lines.join("\n")
+}
+
+fn parse_inline_tags(value: &str) -> Vec<String> {
+    value
+        .trim_start_matches('[')
+        .trim_end_matches(']')
+        .split(',')
+        .map(|tag| tag.trim())
+        .map(|tag| tag.trim_matches(|character| character == '"' || character == '\''))
+        .filter(|tag| !tag.is_empty())
+        .map(String::from)
+        .collect()
+}
+
+fn parse_template_markdown(content: &str) -> ParsedTemplateSeed {
+    let normalized = normalize_markdown(content);
+    if !normalized.starts_with("---\n") {
+        return ParsedTemplateSeed {
+            body: normalized,
+            subject: None,
+            tags: None,
+        };
+    }
+
+    let remaining = &normalized[4..];
+    let closing_with_body = remaining.find("\n---\n");
+    let closing_without_body = remaining.strip_suffix("\n---");
+
+    let (frontmatter, body_with_spacing) = if let Some(index) = closing_with_body {
+        (&remaining[..index], remaining[index + 5..].to_string())
+    } else if let Some(frontmatter) = closing_without_body {
+        (frontmatter, String::new())
+    } else {
+        return ParsedTemplateSeed {
+            body: normalized,
+            subject: None,
+            tags: None,
+        };
+    };
+
+    let body = body_with_spacing
+        .strip_prefix('\n')
+        .unwrap_or(&body_with_spacing)
+        .to_string();
+
+    let lines = frontmatter.lines().collect::<Vec<_>>();
+    let mut subject = None;
+    let mut tags = None;
+    let mut index = 0;
+
+    while index < lines.len() {
+        let line = lines[index].trim();
+        if let Some(value) = line.strip_prefix("subject:") {
+            subject = clean_optional_string(Some(value.trim().to_string()));
+            index += 1;
+            continue;
+        }
+
+        let Some(value) = line.strip_prefix("tags:") else {
+            index += 1;
+            continue;
+        };
+
+        let remainder = value.trim();
+        if remainder.starts_with('[') && remainder.ends_with(']') {
+            tags = clean_optional_tags(Some(parse_inline_tags(remainder)));
+            index += 1;
+            continue;
+        }
+
+        let mut collected = Vec::new();
+        index += 1;
+        while index < lines.len() {
+            let item = lines[index].trim();
+            let Some(tag) = item.strip_prefix("- ") else {
+                break;
+            };
+            collected.push(
+                tag.trim()
+                    .trim_matches(|character| character == '"' || character == '\'')
+                    .to_string(),
+            );
+            index += 1;
+        }
+        tags = clean_optional_tags(Some(collected));
+    }
+
+    ParsedTemplateSeed { body, subject, tags }
+}
+
+fn metadata_updated_at(path: &Path) -> Result<u64, String> {
+    let modified = fs::metadata(path)
+        .map_err(|error| format!("Unable to read metadata for {}: {error}", path.display()))?
+        .modified()
+        .map_err(|error| format!("Unable to read modified time for {}: {error}", path.display()))?;
+    let duration = modified
+        .duration_since(UNIX_EPOCH)
+        .map_err(|error| format!("Invalid modified time for {}: {error}", path.display()))?;
+    u64::try_from(duration.as_millis())
+        .map_err(|_| format!("Modified time is out of range for {}", path.display()))
 }
 
 fn build_note(path: &Path) -> Note {
@@ -282,6 +540,38 @@ fn build_folder_item(vault_path: &Path, path: &Path) -> Result<FolderItem, Strin
     })
 }
 
+fn build_template_summary(path: &Path) -> Result<TemplateSummary, String> {
+    let file_name = path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .ok_or_else(|| format!("Invalid template file name: {}", path.display()))?;
+    let path_string = path_to_string(path);
+    Ok(TemplateSummary {
+        id: path_string.clone(),
+        name: strip_markdown_extension(file_name).to_string(),
+        path: path_string,
+        updated_at: metadata_updated_at(path)?,
+    })
+}
+
+fn build_template_content(path: &Path) -> Result<TemplateContent, String> {
+    let summary = build_template_summary(path)?;
+    let parsed = parse_template_markdown(
+        &fs::read_to_string(path)
+            .map_err(|error| format!("Unable to read template {}: {error}", path.display()))?,
+    );
+
+    Ok(TemplateContent {
+        id: summary.id,
+        name: summary.name,
+        path: summary.path,
+        updated_at: summary.updated_at,
+        body: parsed.body,
+        subject: parsed.subject,
+        tags: parsed.tags,
+    })
+}
+
 fn build_template_item(path: &Path) -> Result<TemplateItem, String> {
     let content = fs::read_to_string(path)
         .map_err(|error| format!("Unable to read template {}: {error}", path.display()))?;
@@ -293,6 +583,14 @@ fn build_template_item(path: &Path) -> Result<TemplateItem, String> {
         path: path_string,
         content,
     })
+}
+
+fn sort_templates(items: &mut [TemplateSummary]) {
+    items.sort_by(|left, right| {
+        left.name
+            .to_ascii_lowercase()
+            .cmp(&right.name.to_ascii_lowercase())
+    });
 }
 
 fn sort_items(items: &mut [FileSystemItem]) {
@@ -315,11 +613,12 @@ fn list_directory_entries(vault_path: &Path, directory: &Path) -> Result<Vec<Fil
         .map_err(|error| format!("Unable to read directory {}: {error}", directory.display()))?;
 
     let trash_root_path = trash_root(vault_path);
+    let app_root_path = app_directory(vault_path);
     let mut items = Vec::new();
     for entry in entries {
         let entry = entry.map_err(|error| format!("Failed to read directory entry: {error}"))?;
         let entry_path = entry.path();
-        if entry_path == trash_root_path {
+        if entry_path == trash_root_path || entry_path == app_root_path {
             continue;
         }
 
@@ -337,10 +636,10 @@ fn list_directory_entries(vault_path: &Path, directory: &Path) -> Result<Vec<Fil
                 path: path_to_string(&entry_path),
                 children,
             });
-        } else if file_type.is_file() && entry_name.to_ascii_lowercase().ends_with(".md") {
+        } else if file_type.is_file() && is_markdown_file(&entry_name) {
             items.push(FileSystemItem::File {
                 id: path_to_string(&entry_path),
-                title: file_title_from_path(&entry_path),
+                title: strip_markdown_extension(&entry_name).to_string(),
                 path: path_to_string(&entry_path),
             });
         }
@@ -626,12 +925,17 @@ fn list_trash_entries(state: tauri::State<VaultState>) -> Result<Vec<TrashEntry>
 }
 
 #[tauri::command]
-fn create_note(title: String, folder_path: Option<String>, state: tauri::State<VaultState>) -> Result<Note, String> {
+fn create_note(
+    title: String,
+    folder_path: Option<String>,
+    initial_content: String,
+    state: tauri::State<VaultState>,
+) -> Result<Note, String> {
     let vault_path = get_selected_vault(&state)?;
     let target_directory = resolve_target_directory(&vault_path, folder_path)?;
     let desired_path = target_directory.join(note_file_name(title.trim()));
     let note_path = find_available_path(&desired_path, true);
-    fs::write(&note_path, "")
+    fs::write(&note_path, normalize_markdown(&initial_content))
         .map_err(|error| format!("Unable to create note at {}: {error}", note_path.display()))?;
     Ok(build_note(&note_path))
 }
@@ -827,13 +1131,13 @@ fn write_note_metadata(path: String, metadata: Value, state: tauri::State<VaultS
 }
 
 #[tauri::command]
-fn list_templates(state: tauri::State<VaultState>) -> Result<Vec<TemplateItem>, String> {
+fn list_templates(state: tauri::State<VaultState>) -> Result<Vec<TemplateSummary>, String> {
     let vault_path = get_selected_vault(&state)?;
-    ensure_templates_layout(&vault_path)?;
-    let entries = fs::read_dir(templates_directory(&vault_path)).map_err(|error| {
+    let templates_path = ensure_templates_layout(&vault_path)?;
+    let entries = fs::read_dir(&templates_path).map_err(|error| {
         format!(
             "Unable to read templates directory {}: {error}",
-            templates_directory(&vault_path).display()
+            templates_path.display()
         )
     })?;
 
@@ -844,31 +1148,70 @@ fn list_templates(state: tauri::State<VaultState>) -> Result<Vec<TemplateItem>, 
         let file_type = entry
             .file_type()
             .map_err(|error| format!("Unable to read template file type: {error}"))?;
-        if file_type.is_file() && path.extension().and_then(|value| value.to_str()) == Some("md") {
-            templates.push(build_template_item(&path)?);
+        let Some(file_name) = path.file_name().and_then(|value| value.to_str()) else {
+            continue;
+        };
+        if file_type.is_file() && is_markdown_file(file_name) {
+            templates.push(build_template_summary(&path)?);
         }
     }
 
-    templates.sort_by(|left, right| left.name.to_ascii_lowercase().cmp(&right.name.to_ascii_lowercase()));
+    sort_templates(&mut templates);
     Ok(templates)
 }
 
 #[tauri::command]
-fn create_template(name: String, content: String, state: tauri::State<VaultState>) -> Result<TemplateItem, String> {
+fn create_template(
+    name: String,
+    body: String,
+    subject: Option<String>,
+    tags: Option<Vec<String>>,
+    state: tauri::State<VaultState>,
+) -> Result<TemplateContent, String> {
     let vault_path = get_selected_vault(&state)?;
-    ensure_templates_layout(&vault_path)?;
-    let desired_path = templates_directory(&vault_path).join(note_file_name(name.trim()));
+    let templates_path = ensure_templates_layout(&vault_path)?;
+    let desired_path = templates_path.join(format!("{}.md", sanitize_template_name(name.trim())));
     let template_path = find_available_path(&desired_path, true);
-    fs::write(&template_path, content)
+    let markdown = serialize_template_markdown(&ParsedTemplateSeed {
+        body: normalize_markdown(&body),
+        subject,
+        tags,
+    });
+    fs::write(&template_path, markdown)
         .map_err(|error| format!("Unable to create template at {}: {error}", template_path.display()))?;
-    build_template_item(&template_path)
+    build_template_content(&template_path)
 }
 
 #[tauri::command]
-fn read_template(path: String, state: tauri::State<VaultState>) -> Result<TemplateItem, String> {
+fn read_template(path: String, state: tauri::State<VaultState>) -> Result<TemplateContent, String> {
     let vault_path = get_selected_vault(&state)?;
     let template_path = ensure_template_file_in_vault(&vault_path, Path::new(path.trim()))?;
-    build_template_item(&template_path)
+    build_template_content(&template_path)
+}
+
+#[tauri::command]
+fn rename_template(path: String, new_name: String, state: tauri::State<VaultState>) -> Result<TemplateSummary, String> {
+    let vault_path = get_selected_vault(&state)?;
+    let template_path = ensure_template_file_in_vault(&vault_path, Path::new(path.trim()))?;
+    let templates_path = ensure_templates_layout(&vault_path)?;
+    let desired_path = templates_path.join(format!("{}.md", sanitize_template_name(new_name.trim())));
+    let next_path = if desired_path == template_path {
+        template_path.clone()
+    } else {
+        find_available_path(&desired_path, true)
+    };
+
+    if next_path != template_path {
+        fs::rename(&template_path, &next_path).map_err(|error| {
+            format!(
+                "Unable to rename template {} to {}: {error}",
+                template_path.display(),
+                next_path.display()
+            )
+        })?;
+    }
+
+    build_template_summary(&next_path)
 }
 
 #[tauri::command]
@@ -876,7 +1219,8 @@ fn update_template(path: String, name: Option<String>, content: Option<String>, 
     let vault_path = get_selected_vault(&state)?;
     let template_path = ensure_template_file_in_vault(&vault_path, Path::new(path.trim()))?;
     let next_path = if let Some(next_name) = name {
-        let desired_path = templates_directory(&vault_path).join(note_file_name(next_name.trim()));
+        let templates_path = ensure_templates_layout(&vault_path)?;
+        let desired_path = templates_path.join(format!("{}.md", sanitize_template_name(next_name.trim())));
         if desired_path == template_path {
             template_path.clone()
         } else {
@@ -985,6 +1329,7 @@ pub fn run() {
             list_templates,
             create_template,
             read_template,
+            rename_template,
             update_template,
             delete_template,
             apply_template

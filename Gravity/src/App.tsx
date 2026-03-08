@@ -16,17 +16,23 @@ import { PaneContainer } from "./components/PaneContainer";
 import {
   createFolder,
   createNote,
+  createTemplate,
+  createTemplateFromNote,
   deleteFolder,
   deleteNote,
+  deleteTemplate,
   getNotesDirectory,
   listNotesWithFolders,
+  listTemplates,
   listTrashEntries,
   moveFolder,
   moveNote,
   permanentlyDeleteTrashEntry,
   readNote,
+  readTemplate,
   renameFolder,
   renameNote,
+  renameTemplate,
   restoreTrashEntry,
   selectNotesDirectory,
   updateNote,
@@ -35,6 +41,7 @@ import { initialPaneSessionState, paneSessionReducer, type OpenMode } from "./st
 import { markStartupError, markStartupReady, recordStartupEvent } from "./state/startupDiagnostics";
 import type { NoteViewMode } from "./types/editor";
 import type { FileSystemItem, Note, NoteDocument, NoteMetadata, TrashEntry } from "./types/notes";
+import type { TemplateSummary } from "./types/templates";
 import {
   DEFAULT_TAG_OPTIONS,
   createEmptyNoteMetadata,
@@ -234,6 +241,7 @@ function App() {
 
   const [notesDirectory, setNotesDirectory] = useState(getNotesDirectory());
   const [notes, setNotes] = useState<FileSystemItem[]>([]);
+  const [templates, setTemplates] = useState<TemplateSummary[]>([]);
   const [trashEntries, setTrashEntries] = useState<TrashEntry[]>([]);
   const [paneSession, dispatchPane] = useReducer(paneSessionReducer, initialPaneSessionState);
   const [noteContents, setNoteContents] = useState<Record<string, string>>({});
@@ -360,10 +368,21 @@ function App() {
     setLoadingNoteIds((current) => removeSetValues(current, removed));
   }, []);
 
+  const refreshTemplates = useCallback(async () => {
+    if (!notesDirectory) {
+      setTemplates([]);
+      return;
+    }
+
+    const nextTemplates = await listTemplates();
+    setTemplates(nextTemplates);
+  }, [notesDirectory]);
+
   const refreshVaultState = useCallback(async () => {
     if (!notesDirectory) {
       recordStartupEvent("vault.unselected");
       setNotes([]);
+      setTemplates([]);
       setTrashEntries([]);
       dispatchPane({ type: "reset" });
       setNoteContents({});
@@ -379,7 +398,11 @@ function App() {
     setErrorMessage(null);
 
     try {
-      const [entries, trash] = await Promise.all([listNotesWithFolders(), listTrashEntries()]);
+      const [entries, trash, templateSummaries] = await Promise.all([
+        listNotesWithFolders(),
+        listTrashEntries(),
+        listTemplates(),
+      ]);
       const flatNotes = flattenNotes(entries);
 
       setLoadingNoteIds(new Set(flatNotes.map((note) => note.id)));
@@ -420,6 +443,7 @@ function App() {
       });
 
       setNotes(entries);
+      setTemplates(templateSummaries);
       setTrashEntries(trash);
       setSelectedFolderPath((current) => {
         if (!current) return current;
@@ -449,6 +473,7 @@ function App() {
 
       recordStartupEvent("vault.refresh.succeeded", {
         noteCount: existingIds.size,
+        templateCount: templateSummaries.length,
         trashCount: trash.length,
       });
 
@@ -537,6 +562,7 @@ function App() {
         setNoteMetadataById({});
         setNoteViewModes({});
         setLoadingNoteIds(new Set());
+        setTemplates([]);
       }
     } catch (error) {
       console.error(error);
@@ -606,10 +632,11 @@ function App() {
     [ensureNoteLoaded]
   );
 
-  const handleCreateNote = async (title: string) => {
+  const handleCreateNote = async (title: string, templatePath: string | null) => {
     setErrorMessage(null);
     try {
-      const created = await createNote(title, selectedFolderPath);
+      const template = templatePath ? await readTemplate(templatePath) : null;
+      const created = await createNote(title, selectedFolderPath, template);
       await refreshVaultState();
       await openNoteInPane(created, "active");
     } catch (error) {
@@ -737,6 +764,54 @@ function App() {
     }
   };
 
+  const handleCreateTemplate = async (name: string) => {
+    setErrorMessage(null);
+    try {
+      await createTemplate(name, { body: "" });
+      await refreshTemplates();
+    } catch (error) {
+      console.error(error);
+      setErrorMessage("Unable to create the template.");
+    }
+  };
+
+  const handleRenameTemplate = async (template: TemplateSummary, nextName: string) => {
+    setErrorMessage(null);
+    try {
+      await renameTemplate(template.path, nextName);
+      await refreshTemplates();
+    } catch (error) {
+      console.error(error);
+      setErrorMessage("Unable to rename the template.");
+    }
+  };
+
+  const handleDeleteTemplate = async (template: TemplateSummary) => {
+    setErrorMessage(null);
+    try {
+      await deleteTemplate(template.path);
+      await refreshTemplates();
+    } catch (error) {
+      console.error(error);
+      setErrorMessage("Unable to delete the template.");
+    }
+  };
+
+  const handleCreateTemplateFromNote = async (note: Note, value: string) => {
+    setErrorMessage(null);
+    try {
+      const markdown = serializeNoteDocument({
+        body: value,
+        metadata: normalizeNoteMetadata(noteMetadataByIdRef.current[note.id] ?? note),
+      });
+      await createTemplateFromNote(note.title, markdown);
+      await refreshTemplates();
+    } catch (error) {
+      console.error(error);
+      setErrorMessage("Unable to create a template from this note.");
+    }
+  };
+
   const handleAutoSave = async (noteId: string, nextDocument: NoteDocument) => {
     const note = getNoteById(noteId);
     if (!note) return;
@@ -834,6 +909,7 @@ function App() {
           <NoteList
             directoryPath={notesDirectory}
             notes={notesWithMetadata}
+            templates={templates}
             trashEntries={trashEntries}
             selectedNoteId={activeNoteId}
             selectedFolderPath={selectedFolderPath}
@@ -842,8 +918,8 @@ function App() {
             onOpenVault={() => {
               void handleOpenVault();
             }}
-            onCreateNote={(title) => {
-              void handleCreateNote(title);
+            onCreateNote={(title, templatePath) => {
+              void handleCreateNote(title, templatePath);
             }}
             onRenameNote={(note, title) => {
               void handleRenameNote(note, title);
@@ -853,6 +929,15 @@ function App() {
             }}
             onCreateFolder={(name) => {
               void handleCreateFolder(name);
+            }}
+            onCreateTemplate={(name) => {
+              void handleCreateTemplate(name);
+            }}
+            onRenameTemplate={(template, nextName) => {
+              void handleRenameTemplate(template, nextName);
+            }}
+            onDeleteTemplate={(template) => {
+              void handleDeleteTemplate(template);
             }}
             onRenameFolder={(folderPath, name) => {
               void handleRenameFolder(folderPath, name);
@@ -949,6 +1034,9 @@ function App() {
             }}
             onClosePane={handleClosePane}
             onToggleNoteViewMode={toggleNoteViewMode}
+            onCreateTemplateFromNote={(note, value) => {
+              void handleCreateTemplateFromNote(note, value);
+            }}
             onChangeNote={handleChangeNoteContent}
             onChangeNoteMetadata={handleChangeNoteMetadata}
             onAutoSaveNote={handleAutoSave}

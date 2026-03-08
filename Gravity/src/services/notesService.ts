@@ -1,5 +1,10 @@
 import { invoke } from "@tauri-apps/api/core";
 import { open } from "@tauri-apps/plugin-dialog";
+import {
+  buildTemplatePayload,
+  parseTemplateMarkdown,
+  serializeTemplateMarkdown,
+} from "./templateContent";
 import type {
   FileSystemItem,
   FolderItem,
@@ -10,10 +15,13 @@ import type {
   TemplateItem,
   TrashEntry,
 } from "../types/notes";
+import type { TemplateContent, TemplateSummary } from "../types/templates";
 
 const NOTES_DIRECTORY_KEY = "gravity.notesDirectory";
 
 let activeVaultPath = "";
+
+type TemplateSeed = Pick<TemplateContent, "body" | "subject" | "tags">;
 
 function normalizeSelection(selection: string | string[] | null): string | null {
   if (Array.isArray(selection)) {
@@ -100,6 +108,15 @@ function buildRelativePath(basePath: string, targetPath: string): string {
 
   const trimmed = targetPath.slice(basePath.length).replace(/^[\\/]+/, "");
   return trimmed || targetPath;
+}
+
+function toTemplateItem(template: TemplateContent): TemplateItem {
+  return {
+    id: template.id,
+    name: template.name,
+    path: template.path,
+    content: serializeTemplateMarkdown(template),
+  };
 }
 
 export function buildFilenameSearchResults(
@@ -192,26 +209,34 @@ export async function listTrashEntries(): Promise<TrashEntry[]> {
   return invoke<TrashEntry[]>("list_trash_entries");
 }
 
-export async function createNote(title: string, folderPath?: string | null): Promise<Note> {
+export async function createNote(
+  title: string,
+  folderPath?: string | null,
+  template?: TemplateSeed | null
+): Promise<Note> {
   await ensureVaultSelected();
+  const initialContent = template ? serializeTemplateMarkdown(template) : "";
   const note = await invoke<Note>("create_note", {
     title,
     folderPath: folderPath ?? null,
+    initialContent,
   });
   return normalizeNote(note);
 }
 
 export async function renameNote(path: string, title: string): Promise<Note> {
   await ensureVaultSelected();
-  return invoke<Note>("rename_note", { path, title });
+  return normalizeNote(await invoke<Note>("rename_note", { path, title }));
 }
 
 export async function moveNote(path: string, folderPath?: string | null): Promise<Note> {
   await ensureVaultSelected();
-  return invoke<Note>("move_note", {
-    path,
-    folderPath: folderPath ?? null,
-  });
+  return normalizeNote(
+    await invoke<Note>("move_note", {
+      path,
+      folderPath: folderPath ?? null,
+    })
+  );
 }
 
 export async function createFolder(name: string, folderPath?: string | null): Promise<FolderItem> {
@@ -278,19 +303,58 @@ export async function permanentlyDeleteTrashEntry(id: string): Promise<void> {
   await invoke("permanently_delete_trash_entry", { id });
 }
 
-export async function listTemplates(): Promise<TemplateItem[]> {
+export async function listTemplates(): Promise<TemplateSummary[]> {
   await ensureVaultSelected();
-  return invoke<TemplateItem[]>("list_templates");
+  return invoke<TemplateSummary[]>("list_templates");
 }
 
-export async function createTemplate(name: string, content: string): Promise<TemplateItem> {
+export async function readTemplate(path: string): Promise<TemplateContent> {
   await ensureVaultSelected();
-  return invoke<TemplateItem>("create_template", { name, content });
+  return invoke<TemplateContent>("read_template", { path });
 }
 
-export async function readTemplate(path: string): Promise<TemplateItem> {
+export async function createTemplate(
+  name: string,
+  template: TemplateSeed
+): Promise<TemplateContent> {
   await ensureVaultSelected();
-  return invoke<TemplateItem>("read_template", { path });
+  const payload = buildTemplatePayload(template);
+  return invoke<TemplateContent>("create_template", {
+    name,
+    body: payload.body,
+    subject: payload.subject ?? null,
+    tags: payload.tags ?? null,
+  });
+}
+
+export async function createTemplateFromNote(
+  name: string,
+  markdown: string
+): Promise<TemplateContent> {
+  return createTemplate(name, parseTemplateMarkdown(markdown));
+}
+
+export async function renameTemplate(path: string, newName: string): Promise<TemplateSummary> {
+  await ensureVaultSelected();
+  return invoke<TemplateSummary>("rename_template", {
+    path,
+    newName,
+  });
+}
+
+export async function deleteTemplate(path: string): Promise<void> {
+  await ensureVaultSelected();
+  await invoke("delete_template", { path });
+}
+
+export async function listTemplateItems(): Promise<TemplateItem[]> {
+  const templates = await listTemplates();
+  const contents = await Promise.all(templates.map((template) => readTemplate(template.path)));
+  return contents.map((template) => toTemplateItem(template));
+}
+
+export async function readTemplateItem(path: string): Promise<TemplateItem> {
+  return toTemplateItem(await readTemplate(path));
 }
 
 export async function updateTemplate(
@@ -303,11 +367,6 @@ export async function updateTemplate(
     name: updates.name ?? null,
     content: updates.content ?? null,
   });
-}
-
-export async function deleteTemplate(path: string): Promise<void> {
-  await ensureVaultSelected();
-  await invoke("delete_template", { path });
 }
 
 export async function applyTemplate(

@@ -13,6 +13,7 @@ interface EditorPaneProps {
   onFocus: () => void;
   onClose: () => void;
   onToggleViewMode: () => void;
+  onCreateTemplateFromNote: (note: Note, value: string) => void;
   onChange: (value: string) => void;
   onMetadataChange: (metadata: NoteMetadata) => void;
   onAutoSave: (value: NoteDocument) => Promise<void>;
@@ -28,6 +29,7 @@ export function EditorPane({
   onFocus,
   onClose,
   onToggleViewMode,
+  onCreateTemplateFromNote,
   onChange,
   onMetadataChange,
   onAutoSave,
@@ -40,6 +42,14 @@ export function EditorPane({
   const handleToggleViewMode = (event: MouseEvent<HTMLButtonElement>) => {
     event.stopPropagation();
     onToggleViewMode();
+  };
+
+  const handleCreateTemplate = (event: MouseEvent<HTMLButtonElement>) => {
+    event.stopPropagation();
+    if (!note || isLoading) {
+      return;
+    }
+    onCreateTemplateFromNote(note, value);
   };
 
   return (
@@ -75,6 +85,14 @@ export function EditorPane({
               onClick={handleToggleViewMode}
             >
               {viewMode === "preview" ? "Switch to Edit" : "Switch to Preview"}
+            </button>
+            <button
+              className="button button--secondary editor-pane__template"
+              type="button"
+              onClick={handleCreateTemplate}
+              disabled={!note || isLoading}
+            >
+              Create Template
             </button>
             <button
               className="editor-pane__close"
