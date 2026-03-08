@@ -1,6 +1,12 @@
-import { type ComponentPropsWithoutRef } from "react";
+import {
+  type ComponentPropsWithoutRef,
+  type JSX,
+  type KeyboardEvent as ReactKeyboardEvent,
+  type MouseEvent as ReactMouseEvent,
+} from "react";
 import ReactMarkdown, { type Components } from "react-markdown";
 import remarkGfm from "remark-gfm";
+import { createCheckboxPreviewPlugin } from "./markdownPreviewCheckboxes";
 
 interface MarkdownPreviewProps {
   value: string;
@@ -9,90 +15,133 @@ interface MarkdownPreviewProps {
 
 type MarkdownInputProps = ComponentPropsWithoutRef<"input"> & {
   node?: unknown;
+  "data-task-index"?: number | string;
+  dataTaskIndex?: number | string;
 };
 
+type MarkdownElementProps<Tag extends keyof JSX.IntrinsicElements> =
+  ComponentPropsWithoutRef<Tag> & {
+    node?: unknown;
+  };
+
+function mergeClassNames(...classNames: Array<string | undefined>): string | undefined {
+  const mergedClassName = classNames.filter(Boolean).join(" ");
+  return mergedClassName || undefined;
+}
+
+function parseTaskIndex(value: number | string | undefined): number | null {
+  if (typeof value === "number") {
+    return Number.isInteger(value) ? value : null;
+  }
+
+  if (typeof value === "string" && value.length > 0) {
+    const parsed = Number.parseInt(value, 10);
+    return Number.isNaN(parsed) ? null : parsed;
+  }
+
+  return null;
+}
+
 export function MarkdownPreview({ value, onToggleTask }: MarkdownPreviewProps) {
+  const checkboxPreviewPlugin = createCheckboxPreviewPlugin(value);
+
   const components: Components = {
     table: (props) => {
-      const { node, ...rest } = props;
-      void node;
-      return <table className="markdown-preview__table" {...rest} />;
-    },
-    thead: (props) => {
-      const { node, ...rest } = props;
-      void node;
-      return <thead className="markdown-preview__thead" {...rest} />;
-    },
-    td: (props) => {
-      const { node, ...rest } = props;
-      void node;
-      return <td className="markdown-preview__cell" {...rest} />;
-    },
-    th: (props) => {
-      const { node, ...rest } = props;
-      void node;
-      return <th className="markdown-preview__header-cell" {...rest} />;
-    },
-    blockquote: (props) => {
-      const { node, ...rest } = props;
-      void node;
-      return <blockquote className="markdown-preview__blockquote" {...rest} />;
-    },
-    pre: (props) => {
-      const { node, ...rest } = props;
-      void node;
-      return <pre className="markdown-preview__pre" {...rest} />;
-    },
-    code: (props) => {
-      const { node, ...rest } = props;
-      void node;
-      return <code className="markdown-preview__code" {...rest} />;
-    },
-    ul: (props) => {
-      const { node, ...rest } = props;
-      void node;
-      return <ul className="markdown-preview__list" {...rest} />;
-    },
-    ol: (props) => {
-      const { node, ...rest } = props;
-      void node;
-      return <ol className="markdown-preview__list" {...rest} />;
-    },
-    li: (props) => {
-      const { node, ...rest } = props;
-      void node;
-      return <li className="markdown-preview__list-item" {...rest} />;
-    },
-    input: (props: MarkdownInputProps) => {
       const { node, className, ...rest } = props;
       void node;
+      return <table {...rest} className={mergeClassNames(className, "markdown-preview__table")} />;
+    },
+    thead: (props) => {
+      const { node, className, ...rest } = props;
+      void node;
+      return <thead {...rest} className={mergeClassNames(className, "markdown-preview__thead")} />;
+    },
+    tbody: (props) => {
+      const { node, className, ...rest } = props;
+      void node;
+      return <tbody {...rest} className={mergeClassNames(className, "markdown-preview__tbody")} />;
+    },
+    tr: (props) => {
+      const { node, className, ...rest } = props;
+      void node;
+      return <tr {...rest} className={mergeClassNames(className, "markdown-preview__row")} />;
+    },
+    td: (props: MarkdownElementProps<"td">) => {
+      const { node, className, ...rest } = props;
+      void node;
+      return <td {...rest} className={mergeClassNames(className, "markdown-preview__cell")} />;
+    },
+    th: (props: MarkdownElementProps<"th">) => {
+      const { node, className, ...rest } = props;
+      void node;
+      return (
+        <th {...rest} className={mergeClassNames(className, "markdown-preview__header-cell")} />
+      );
+    },
+    blockquote: (props) => {
+      const { node, className, ...rest } = props;
+      void node;
+      return (
+        <blockquote
+          {...rest}
+          className={mergeClassNames(className, "markdown-preview__blockquote")}
+        />
+      );
+    },
+    pre: (props) => {
+      const { node, className, ...rest } = props;
+      void node;
+      return <pre {...rest} className={mergeClassNames(className, "markdown-preview__pre")} />;
+    },
+    code: (props) => {
+      const { node, className, ...rest } = props;
+      void node;
+      return <code {...rest} className={mergeClassNames(className, "markdown-preview__code")} />;
+    },
+    ul: (props) => {
+      const { node, className, ...rest } = props;
+      void node;
+      return <ul {...rest} className={mergeClassNames(className, "markdown-preview__list")} />;
+    },
+    ol: (props) => {
+      const { node, className, ...rest } = props;
+      void node;
+      return <ol {...rest} className={mergeClassNames(className, "markdown-preview__list")} />;
+    },
+    li: (props: MarkdownElementProps<"li">) => {
+      const { node, className, ...rest } = props;
+      void node;
+      return <li {...rest} className={mergeClassNames(className, "markdown-preview__list-item")} />;
+    },
+    input: (props: MarkdownInputProps) => {
+      const { node, className, dataTaskIndex, ...rest } = props;
+      void node;
 
-      if (rest.type !== "checkbox") {
+      const taskIndex = parseTaskIndex(rest["data-task-index"] ?? dataTaskIndex);
+      if (rest.type !== "checkbox" || taskIndex === null) {
         return <input className={className} {...rest} />;
       }
 
-      const mergedClassName = [className, "markdown-preview__task-checkbox"]
-        .filter(Boolean)
-        .join(" ");
+      const handleToggle = (
+        event: ReactMouseEvent<HTMLInputElement> | ReactKeyboardEvent<HTMLInputElement>
+      ) => {
+        event.preventDefault();
+        event.stopPropagation();
+        onToggleTask(taskIndex);
+      };
 
       return (
         <input
           {...rest}
-          className={mergedClassName}
+          data-task-index={taskIndex}
+          className={mergeClassNames(className, "markdown-preview__task-checkbox")}
           checked={Boolean(rest.checked)}
           disabled={false}
-          onChange={(event) => {
-            const root = event.currentTarget.closest(".markdown-preview");
-            if (!root) {
-              return;
-            }
-
-            const checkboxes = Array.from(
-              root.querySelectorAll<HTMLInputElement>('input[type="checkbox"]')
-            );
-            const taskIndex = checkboxes.indexOf(event.currentTarget);
-            if (taskIndex >= 0) {
-              onToggleTask(taskIndex);
+          readOnly
+          onClick={handleToggle}
+          onKeyDown={(event) => {
+            if (event.key === " " || event.key === "Enter") {
+              handleToggle(event);
             }
           }}
         />
@@ -102,7 +151,11 @@ export function MarkdownPreview({ value, onToggleTask }: MarkdownPreviewProps) {
 
   return (
     <div className="markdown-preview">
-      <ReactMarkdown remarkPlugins={[remarkGfm]} components={components}>
+      <ReactMarkdown
+        remarkPlugins={[remarkGfm]}
+        rehypePlugins={[checkboxPreviewPlugin]}
+        components={components}
+      >
         {value}
       </ReactMarkdown>
     </div>

@@ -1,7 +1,8 @@
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
 import { NoteList } from "../src/components/NoteList";
-import type { FileSystemItem } from "../src/types/notes";
+import type { FileSystemItem, TrashEntry } from "../src/types/notes";
+import type { TemplateSummary } from "../src/types/templates";
 
 describe("NoteList rendering", () => {
   it("shows correct nested folder note count", () => {
@@ -17,6 +18,7 @@ describe("NoteList rendering", () => {
             id: "/vault/projects/one.md",
             title: "one",
             path: "/vault/projects/one.md",
+            tags: [],
           },
           {
             type: "folder",
@@ -29,6 +31,7 @@ describe("NoteList rendering", () => {
                 id: "/vault/projects/archive/two.md",
                 title: "two",
                 path: "/vault/projects/archive/two.md",
+                tags: [],
               },
             ],
           },
@@ -36,23 +39,102 @@ describe("NoteList rendering", () => {
       },
     ];
 
+    const templates: TemplateSummary[] = [];
+    const trashEntries: TrashEntry[] = [];
+
     const html = renderToStaticMarkup(
       <NoteList
         directoryPath="/vault"
         notes={notes}
+        templates={templates}
+        trashEntries={trashEntries}
         selectedNoteId={null}
         selectedFolderPath={null}
+        availableTags={["idea", "draft"]}
+        selectedTags={[]}
         onOpenVault={() => {}}
         onCreateNote={() => {}}
+        onRenameNote={() => {}}
+        onMoveNote={() => {}}
         onCreateFolder={() => {}}
+        onCreateTemplate={() => {}}
+        onRenameTemplate={() => {}}
+        onDeleteTemplate={() => {}}
+        onRenameFolder={() => {}}
+        onMoveFolder={() => {}}
+        onDeleteFolder={() => {}}
         onSelectFolder={() => {}}
         onSelectNote={() => {}}
         onOpenInNewPane={() => {}}
         onDeleteNote={() => {}}
+        onToggleTagFilter={() => {}}
+        onClearTagFilters={() => {}}
+        onRestoreTrashEntry={() => {}}
+        onPermanentlyDeleteTrashEntry={() => {}}
         errorMessage={null}
       />
     );
 
     expect(html).toContain("2 notes");
+    expect(html).toContain("Trash");
+    expect(html).toContain("Reusable starts");
+  });
+
+  it("applies match-all tag filtering in the sidebar", () => {
+    const notes: FileSystemItem[] = [
+      {
+        type: "file",
+        id: "/vault/alpha.md",
+        title: "alpha",
+        path: "/vault/alpha.md",
+        tags: ["idea", "project"],
+      },
+      {
+        type: "file",
+        id: "/vault/beta.md",
+        title: "beta",
+        path: "/vault/beta.md",
+        tags: ["idea"],
+      },
+    ];
+
+    const templates: TemplateSummary[] = [];
+    const trashEntries: TrashEntry[] = [];
+
+    const html = renderToStaticMarkup(
+      <NoteList
+        directoryPath="/vault"
+        notes={notes}
+        templates={templates}
+        trashEntries={trashEntries}
+        selectedNoteId={null}
+        selectedFolderPath={null}
+        availableTags={["idea", "project"]}
+        selectedTags={["idea", "project"]}
+        onOpenVault={() => {}}
+        onCreateNote={() => {}}
+        onRenameNote={() => {}}
+        onMoveNote={() => {}}
+        onCreateFolder={() => {}}
+        onCreateTemplate={() => {}}
+        onRenameTemplate={() => {}}
+        onDeleteTemplate={() => {}}
+        onRenameFolder={() => {}}
+        onMoveFolder={() => {}}
+        onDeleteFolder={() => {}}
+        onSelectFolder={() => {}}
+        onSelectNote={() => {}}
+        onOpenInNewPane={() => {}}
+        onDeleteNote={() => {}}
+        onToggleTagFilter={() => {}}
+        onClearTagFilters={() => {}}
+        onRestoreTrashEntry={() => {}}
+        onPermanentlyDeleteTrashEntry={() => {}}
+        errorMessage={null}
+      />
+    );
+
+    expect(html).toContain("alpha");
+    expect(html).not.toContain("beta");
   });
 });

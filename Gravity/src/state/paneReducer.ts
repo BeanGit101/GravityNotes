@@ -16,6 +16,7 @@ export type PaneAction =
   | { type: "close-pane"; paneId: string }
   | { type: "remove-note"; noteId: string }
   | { type: "remove-notes"; noteIds: string[] }
+  | { type: "remap-note-ids"; noteIds: Record<string, string> }
   | { type: "activate-pane"; paneId: string | null };
 
 export const initialPaneSessionState: PaneSessionState = {
@@ -77,14 +78,30 @@ function closePane(state: PaneSessionState, paneId: string): PaneSessionState {
   };
 }
 
-function removeNotesFromPanes(state: PaneSessionState, noteIds: string[]): PaneSessionState {
-  const deletedIds = new Set(noteIds);
-  const panes = state.panes.filter((pane) => !deletedIds.has(pane.noteId));
+function removeNotesFromPanes(state: PaneSessionState, noteIds: Set<string>): PaneSessionState {
+  const panes = state.panes.filter((pane) => !noteIds.has(pane.noteId));
   return {
     panes,
     activePaneId: panes.some((pane) => pane.id === state.activePaneId)
       ? state.activePaneId
       : (panes[0]?.id ?? null),
+  };
+}
+
+function remapPaneNoteIds(
+  state: PaneSessionState,
+  noteIds: Record<string, string>
+): PaneSessionState {
+  if (Object.keys(noteIds).length === 0) {
+    return state;
+  }
+
+  return {
+    ...state,
+    panes: state.panes.map((pane) => ({
+      ...pane,
+      noteId: noteIds[pane.noteId] ?? pane.noteId,
+    })),
   };
 }
 
@@ -97,9 +114,11 @@ export function paneSessionReducer(state: PaneSessionState, action: PaneAction):
     case "close-pane":
       return closePane(state, action.paneId);
     case "remove-note":
-      return removeNotesFromPanes(state, [action.noteId]);
+      return removeNotesFromPanes(state, new Set([action.noteId]));
     case "remove-notes":
-      return removeNotesFromPanes(state, action.noteIds);
+      return removeNotesFromPanes(state, new Set(action.noteIds));
+    case "remap-note-ids":
+      return remapPaneNoteIds(state, action.noteIds);
     case "activate-pane":
       return {
         ...state,
