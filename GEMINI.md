@@ -1,17 +1,22 @@
-## After every change, run these commands and fix all errors before considering the task complete:
+# AGENTS.md
 
-### Type checking
-npm run typecheck  # or: npx tsc --noEmit
+## Command context
+- Run all npm commands from `Gravity/`, or use `npm --prefix Gravity ...` from repo root.
 
-### Linting
-npm run lint       # or: npx eslint . --ext .ts,.tsx
-
-### Format check
-npm run format:check  # or: npx prettier --check .
-
-### Build verification (catches errors the above may miss)
-npm run build
+## Validation
+- After each meaningful code change, run:
+  - `npm --prefix Gravity run typecheck`
+- Before considering any task complete, run:
+  - `npm --prefix Gravity run typecheck`
+  - `npm --prefix Gravity run lint`
+  - `npm --prefix Gravity run format:check`
+  - `npm --prefix Gravity run build`
 
 ## Rules
-- Fix all TypeScript errors — do not use `any` or `@ts-ignore` to silence them
-- Fix all ESLint errors — do not disable rules inline without explaining why
+- Fix all TypeScript errors. Do not use `any` or `@ts-ignore` to silence them.
+- Fix all ESLint errors. Do not disable rules inline unless explicitly approved and justified.
+- Do not claim a task is complete while introduced errors remain.
+- Prefer minimal, local changes that match existing code patterns.
+- Do not perform opportunistic refactors, broad rewrites, or unrelated cleanup.
+- Do not delete or simplify code, commands, types, or handlers just because they appear unused unless explicitly requested.
+- When changing shared contracts or data shapes, verify all affected layers (e.g. frontend, services, Tauri backend).
