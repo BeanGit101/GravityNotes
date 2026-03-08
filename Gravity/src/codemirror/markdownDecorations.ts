@@ -172,6 +172,27 @@ export const markdownTheme = EditorView.baseTheme({
   ".md-table-delimiter": {
     opacity: 0.6,
   },
+  ".md-table-widget": {
+    margin: "0.9em 0",
+    overflowX: "auto",
+  },
+  ".md-table-widget .markdown-preview__table": {
+    width: "100%",
+    borderCollapse: "collapse",
+    background: "#fffdf9",
+    border: "1px solid rgba(18, 19, 26, 0.12)",
+    borderRadius: "8px",
+    overflow: "hidden",
+  },
+  ".md-table-widget .markdown-preview__header-cell, .md-table-widget .markdown-preview__cell": {
+    border: "1px solid rgba(18, 19, 26, 0.12)",
+    padding: "0.5rem 0.65rem",
+    textAlign: "left",
+  },
+  ".md-table-widget .markdown-preview__header-cell": {
+    background: "rgba(248, 211, 91, 0.18)",
+    fontWeight: "700",
+  },
 
   // Links / images
   ".md-link": {

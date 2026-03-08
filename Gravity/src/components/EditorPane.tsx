@@ -1,6 +1,6 @@
 import type { MouseEvent } from "react";
 import type { NoteViewMode } from "../types/editor";
-import type { Note } from "../types/notes";
+import type { Note, NoteDocument, NoteMetadata } from "../types/notes";
 import { NoteEditor } from "./NoteEditor";
 
 interface EditorPaneProps {
@@ -9,12 +9,14 @@ interface EditorPaneProps {
   isActive: boolean;
   isLoading: boolean;
   viewMode: NoteViewMode;
+  availableTags: string[];
   onFocus: () => void;
   onClose: () => void;
   onToggleViewMode: () => void;
   onCreateTemplateFromNote: (note: Note, value: string) => void;
   onChange: (value: string) => void;
-  onAutoSave: (value: string) => Promise<void>;
+  onMetadataChange: (metadata: NoteMetadata) => void;
+  onAutoSave: (value: NoteDocument) => Promise<void>;
 }
 
 export function EditorPane({
@@ -23,11 +25,13 @@ export function EditorPane({
   isActive,
   isLoading,
   viewMode,
+  availableTags,
   onFocus,
   onClose,
   onToggleViewMode,
   onCreateTemplateFromNote,
   onChange,
+  onMetadataChange,
   onAutoSave,
 }: EditorPaneProps) {
   const handleClose = (event: MouseEvent<HTMLButtonElement>) => {
@@ -55,9 +59,20 @@ export function EditorPane({
       role="presentation"
     >
       <NoteEditor
-        note={note}
+        note={note ? { id: note.id, title: note.title, path: note.path } : null}
+        metadata={
+          note
+            ? {
+                subject: note.subject,
+                tags: note.tags,
+                updatedAt: note.updatedAt,
+              }
+            : undefined
+        }
         value={value}
+        availableTags={availableTags}
         onChange={onChange}
+        onMetadataChange={onMetadataChange}
         onAutoSave={onAutoSave}
         isActive={isActive}
         isLoading={isLoading}

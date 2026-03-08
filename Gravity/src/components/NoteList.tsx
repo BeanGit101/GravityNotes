@@ -1,23 +1,46 @@
-import { useEffect, useMemo, useState, type CSSProperties, type FormEvent } from "react";
-import type { FileSystemItem, FolderItem, Note } from "../types/notes";
+import {
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type CSSProperties,
+  type FormEvent,
+} from "react";
+import { buildFilenameSearchResults } from "../services/notesService";
+import { recordStartupEvent } from "../state/startupDiagnostics";
+import type { FileSystemItem, FolderItem, Note, TrashEntry } from "../types/notes";
 import type { TemplateSummary } from "../types/templates";
+import { normalizeNoteMetadata, normalizeTag } from "../utils/frontmatter";
 
 interface NoteListProps {
   directoryPath: string;
   notes: FileSystemItem[];
-  templates: TemplateSummary[];
+  templates?: TemplateSummary[];
+  trashEntries: TrashEntry[];
   selectedNoteId: string | null;
   selectedFolderPath: string | null;
+  availableTags?: string[];
+  selectedTags?: string[];
   onOpenVault: () => void;
   onCreateNote: (title: string, templatePath: string | null) => void;
+  onRenameNote: (note: Note, title: string) => void;
+  onMoveNote: (note: Note, folderPath: string | null) => void;
   onCreateFolder: (name: string) => void;
-  onCreateTemplate: (name: string) => void;
-  onRenameTemplate: (template: TemplateSummary, nextName: string) => void;
-  onDeleteTemplate: (template: TemplateSummary) => void;
+  onCreateTemplate?: (name: string) => void;
+  onRenameTemplate?: (template: TemplateSummary, nextName: string) => void;
+  onDeleteTemplate?: (template: TemplateSummary) => void;
+  onRenameFolder: (folderPath: string, name: string) => void;
+  onMoveFolder: (folderPath: string, nextFolderPath: string | null) => void;
+  onDeleteFolder: (folderPath: string) => void;
   onSelectFolder: (folderPath: string | null) => void;
   onSelectNote: (note: Note) => void;
   onOpenInNewPane: (note: Note) => void;
   onDeleteNote: (note: Note) => void;
+  onToggleTagFilter?: (tag: string) => void;
+  onClearTagFilters?: () => void;
+  onRestoreTrashEntry: (entry: TrashEntry) => void;
+  onPermanentlyDeleteTrashEntry: (entry: TrashEntry) => void;
   errorMessage: string | null;
 }
 
@@ -25,6 +48,13 @@ interface NotesTreeStats {
   totalNotes: number;
   folderNoteCounts: Map<string, number>;
 }
+
+interface FolderOption {
+  label: string;
+  path: string | null;
+}
+
+type ContextTarget = { kind: "note"; note: Note } | { kind: "folder"; folder: FolderItem };
 
 function buildNotesTreeStats(items: FileSystemItem[]): NotesTreeStats {
   const folderNoteCounts = new Map<string, number>();
@@ -52,7 +82,24 @@ function buildNotesTreeStats(items: FileSystemItem[]): NotesTreeStats {
   };
 }
 
-function findFolderByPath(items: FileSystemItem[], path: string): FolderItem | null {
+function collectFolderPaths(items: FileSystemItem[]): Set<string> {
+  const folderPaths = new Set<string>();
+
+  const visit = (entries: FileSystemItem[]) => {
+    entries.forEach((entry) => {
+      if (entry.type === "folder") {
+        folderPaths.add(entry.path);
+        visit(entry.children);
+      }
+    });
+  };
+
+  visit(items);
+  return folderPaths;
+}
+
+function findFolderByPath(items: FileSystemItem[], path: string | null): FolderItem | null {
+  if (!path) return null;
   for (const item of items) {
     if (item.type === "folder") {
       if (item.path === path) {
@@ -67,7 +114,7 @@ function findFolderByPath(items: FileSystemItem[], path: string): FolderItem | n
   return null;
 }
 
-function findFolderChainForNote(items: FileSystemItem[], noteId: string): string[] | null {
+export function findFolderChainForNote(items: FileSystemItem[], noteId: string): string[] | null {
   for (const item of items) {
     if (item.type === "file" && item.id === noteId) {
       return [];
@@ -91,45 +138,243 @@ function formatTemplateUpdatedAt(updatedAt: number): string {
   }).format(updatedAt);
 }
 
+function noteMatchesSelectedTags(note: Note, selectedTags: string[]): boolean {
+  if (selectedTags.length === 0) {
+    return true;
+  }
+
+  const noteTags = new Set(
+    normalizeNoteMetadata(note).tags.map((tag) => normalizeTag(tag).toLocaleLowerCase())
+  );
+  return selectedTags.every((tag) => noteTags.has(normalizeTag(tag).toLocaleLowerCase()));
+}
+
+function filterNotesTree(items: FileSystemItem[], selectedTags: string[]): FileSystemItem[] {
+  const filtered: FileSystemItem[] = [];
+
+  items.forEach((item) => {
+    if (item.type === "file") {
+      if (noteMatchesSelectedTags(item, selectedTags)) {
+        filtered.push(item);
+      }
+      return;
+    }
+
+    const children = filterNotesTree(item.children, selectedTags);
+    if (children.length > 0) {
+      filtered.push({
+        ...item,
+        children,
+      });
+    }
+  });
+
+  return filtered;
+}
+
+function toRelativePath(
+  basePath: string | null | undefined,
+  targetPath: string | null | undefined
+): string {
+  if (!targetPath) {
+    return "";
+  }
+  if (!basePath) {
+    return targetPath;
+  }
+  if (!targetPath.startsWith(basePath)) {
+    return targetPath;
+  }
+  return targetPath.slice(basePath.length).replace(/^[\\/]+/, "") || targetPath;
+}
+
+function collectFolderOptions(items: FileSystemItem[], basePath: string): FolderOption[] {
+  const folders: FolderOption[] = [{ label: "Vault root", path: null }];
+
+  const visit = (entries: FileSystemItem[]) => {
+    entries.forEach((entry) => {
+      if (entry.type !== "folder") {
+        return;
+      }
+
+      folders.push({
+        label: toRelativePath(basePath, entry.path),
+        path: entry.path,
+      });
+      visit(entry.children);
+    });
+  };
+
+  visit(items);
+  return folders;
+}
+
+function isPathWithin(path: string | null, ancestorPath: string): boolean {
+  if (!path) {
+    return false;
+  }
+  return (
+    path === ancestorPath ||
+    path.startsWith(`${ancestorPath}\\`) ||
+    path.startsWith(`${ancestorPath}/`)
+  );
+}
+
+export function expandFoldersForNoteSelection(
+  items: FileSystemItem[],
+  expandedFolders: Set<string>,
+  noteId: string | null
+): Set<string> {
+  if (!noteId) {
+    return new Set(expandedFolders);
+  }
+
+  const chain = findFolderChainForNote(items, noteId);
+  if (!chain) {
+    return new Set(expandedFolders);
+  }
+
+  const next = new Set(expandedFolders);
+  chain.forEach((path) => {
+    next.add(path);
+  });
+  return next;
+}
+
+export function toggleExpandedFolder(
+  expandedFolders: Set<string>,
+  folderPath: string
+): Set<string> {
+  const next = new Set(expandedFolders);
+  if (next.has(folderPath)) {
+    next.delete(folderPath);
+  } else {
+    next.add(folderPath);
+  }
+  return next;
+}
+
+export function pruneExpandedFolders(
+  expandedFolders: Set<string>,
+  items: FileSystemItem[]
+): Set<string> {
+  const validPaths = collectFolderPaths(items);
+  return new Set(Array.from(expandedFolders).filter((path) => validPaths.has(path)));
+}
+
 export function NoteList({
   directoryPath,
   notes,
-  templates,
+  templates = [],
+  trashEntries,
   selectedNoteId,
   selectedFolderPath,
+  availableTags = [],
+  selectedTags = [],
   onOpenVault,
   onCreateNote,
+  onRenameNote,
+  onMoveNote,
   onCreateFolder,
-  onCreateTemplate,
-  onRenameTemplate,
-  onDeleteTemplate,
+  onCreateTemplate = () => {},
+  onRenameTemplate = () => {},
+  onDeleteTemplate = () => {},
+  onRenameFolder,
+  onMoveFolder,
+  onDeleteFolder,
   onSelectFolder,
   onSelectNote,
   onOpenInNewPane,
   onDeleteNote,
+  onToggleTagFilter = () => {},
+  onClearTagFilters = () => {},
+  onRestoreTrashEntry,
+  onPermanentlyDeleteTrashEntry,
   errorMessage,
 }: NoteListProps) {
+  const renderCountRef = useRef(0);
   const [newTitle, setNewTitle] = useState("");
-  const [selectedTemplatePath, setSelectedTemplatePath] = useState<string>("");
+  const [selectedTemplatePath, setSelectedTemplatePath] = useState("");
   const [newFolderName, setNewFolderName] = useState("");
   const [newTemplateName, setNewTemplateName] = useState("");
   const [expandedFolders, setExpandedFolders] = useState<Set<string>>(() => new Set());
   const [editingTemplatePath, setEditingTemplatePath] = useState<string | null>(null);
   const [editingTemplateName, setEditingTemplateName] = useState("");
+  const [searchQuery, setSearchQuery] = useState("");
+  const [showTrash, setShowTrash] = useState(true);
   const [contextMenu, setContextMenu] = useState<{
-    note: Note;
+    target: ContextTarget;
     x: number;
     y: number;
   } | null>(null);
+
+  const normalizedAvailableTags = useMemo(
+    () => normalizeNoteMetadata({ tags: availableTags }).tags,
+    [availableTags]
+  );
+  const normalizedSelectedTags = useMemo(
+    () => normalizeNoteMetadata({ tags: selectedTags }).tags,
+    [selectedTags]
+  );
   const canCreate = Boolean(directoryPath && newTitle.trim());
   const canCreateFolder = Boolean(directoryPath && newFolderName.trim());
   const canCreateTemplate = Boolean(directoryPath && newTemplateName.trim());
   const canSaveTemplateRename = Boolean(editingTemplatePath && editingTemplateName.trim());
-
-  const { totalNotes, folderNoteCounts } = useMemo(() => buildNotesTreeStats(notes), [notes]);
   const activeTemplatePath = templates.some((template) => template.path === selectedTemplatePath)
     ? selectedTemplatePath
     : "";
+  const isContextMenuOpen = contextMenu !== null;
+
+  const filteredNotes = useMemo(
+    () => filterNotesTree(notes, normalizedSelectedTags),
+    [normalizedSelectedTags, notes]
+  );
+
+  const { totalNotes, folderNoteCounts } = useMemo(
+    () => buildNotesTreeStats(filteredNotes),
+    [filteredNotes]
+  );
+
+  const folderOptions = useMemo(
+    () => collectFolderOptions(notes, directoryPath),
+    [notes, directoryPath]
+  );
+
+  const searchResults = useMemo(
+    () => buildFilenameSearchResults(filteredNotes, searchQuery, directoryPath),
+    [directoryPath, filteredNotes, searchQuery]
+  );
+
+  const prunedExpandedFolders = useMemo(
+    () => pruneExpandedFolders(expandedFolders, filteredNotes),
+    [expandedFolders, filteredNotes]
+  );
+
+  const effectiveExpandedFolders = useMemo(
+    () => expandFoldersForNoteSelection(filteredNotes, prunedExpandedFolders, selectedNoteId),
+    [filteredNotes, prunedExpandedFolders, selectedNoteId]
+  );
+
+  const selectedFolderLabel = useMemo(() => {
+    if (!selectedFolderPath) {
+      return "Vault root";
+    }
+    const match = findFolderByPath(notes, selectedFolderPath);
+    return match?.name ?? "Selected folder";
+  }, [notes, selectedFolderPath]);
+
+  const closeContextMenu = useCallback(() => {
+    setContextMenu(null);
+  }, []);
+
+  const handleWindowKeyDown = useCallback(
+    (event: KeyboardEvent) => {
+      if (event.key === "Escape") {
+        closeContextMenu();
+      }
+    },
+    [closeContextMenu]
+  );
 
   const handleCreate = (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
@@ -152,56 +397,207 @@ export function NoteList({
     setNewTemplateName("");
   };
 
-  const selectedFolderLabel = useMemo(() => {
-    if (!selectedFolderPath) {
-      return "Vault root";
+  useEffect(() => {
+    if (!import.meta.env.DEV || import.meta.env.MODE === "test") {
+      return;
     }
-    const match = findFolderByPath(notes, selectedFolderPath);
-    return match?.name ?? "Selected folder";
-  }, [notes, selectedFolderPath]);
 
-  const autoExpandedFolders = useMemo(() => {
-    if (!selectedNoteId) {
-      return new Set<string>();
+    renderCountRef.current += 1;
+    if (renderCountRef.current > 20) {
+      recordStartupEvent("notelist.render.loop.detected", {
+        renderCount: renderCountRef.current,
+        noteCount: notes.length,
+        hasSelectedFolder: Boolean(selectedFolderPath),
+        hasSelectedNote: Boolean(selectedNoteId),
+      });
+      console.error("NoteList render loop detected", {
+        directoryPath,
+        renderCount: renderCountRef.current,
+        noteCount: notes.length,
+        selectedFolderPath,
+        selectedNoteId,
+      });
     }
-    const chain = findFolderChainForNote(notes, selectedNoteId);
-    return new Set(chain ?? []);
-  }, [notes, selectedNoteId]);
-
-  const mergedExpandedFolders = useMemo(() => {
-    const next = new Set(expandedFolders);
-    autoExpandedFolders.forEach((path) => next.add(path));
-    return next;
-  }, [autoExpandedFolders, expandedFolders]);
+  });
 
   useEffect(() => {
-    if (!contextMenu) return;
+    if (!isContextMenuOpen) {
+      return;
+    }
 
-    const handleClick = () => {
-      setContextMenu(null);
-    };
-
-    const handleKey = (event: KeyboardEvent) => {
-      if (event.key === "Escape") {
-        setContextMenu(null);
-      }
-    };
-
-    window.addEventListener("click", handleClick);
-    window.addEventListener("keydown", handleKey);
+    window.addEventListener("click", closeContextMenu);
+    window.addEventListener("keydown", handleWindowKeyDown);
 
     return () => {
-      window.removeEventListener("click", handleClick);
-      window.removeEventListener("keydown", handleKey);
+      window.removeEventListener("click", closeContextMenu);
+      window.removeEventListener("keydown", handleWindowKeyDown);
     };
-  }, [contextMenu]);
+  }, [closeContextMenu, handleWindowKeyDown, isContextMenuOpen]);
+
+  const promptForFolderDestination = (
+    title: string,
+    options: FolderOption[]
+  ): string | null | undefined => {
+    const message = [
+      `${title}.`,
+      "Leave the input empty to use the vault root.",
+      "Available folders:",
+      ...options.map((option) => `- ${option.label}`),
+    ].join("\n");
+    const value = window.prompt(message, "");
+    if (value === null) {
+      return undefined;
+    }
+
+    const trimmed = value.trim();
+    if (!trimmed) {
+      return null;
+    }
+
+    const normalized = trimmed.toLowerCase();
+    const match = options.find((option) => option.label.toLowerCase() === normalized);
+    if (!match) {
+      window.alert(
+        "Choose one of the listed folder paths exactly, or leave the field empty for the vault root."
+      );
+      return undefined;
+    }
+
+    return match.path;
+  };
+
+  const openNoteInSplitPane = (note: Note) => {
+    onOpenInNewPane(note);
+  };
+
+  const runContextAction = (target: ContextTarget, action: string) => {
+    if (target.kind === "note") {
+      if (action === "split") {
+        openNoteInSplitPane(target.note);
+        return;
+      }
+      if (action === "rename") {
+        const nextTitle = window.prompt("Rename note", target.note.title)?.trim();
+        if (nextTitle) {
+          onRenameNote(target.note, nextTitle);
+        }
+        return;
+      }
+      if (action === "move") {
+        const nextFolder = promptForFolderDestination("Move note to folder", folderOptions);
+        if (nextFolder !== undefined) {
+          onMoveNote(target.note, nextFolder);
+        }
+        return;
+      }
+      if (action === "trash") {
+        onDeleteNote(target.note);
+      }
+      return;
+    }
+
+    if (action === "rename") {
+      const nextName = window.prompt("Rename folder", target.folder.name)?.trim();
+      if (nextName) {
+        onRenameFolder(target.folder.path, nextName);
+      }
+      return;
+    }
+    if (action === "move") {
+      const nextFolder = promptForFolderDestination(
+        "Move folder to folder",
+        folderOptions.filter((option) => !isPathWithin(option.path, target.folder.path))
+      );
+      if (nextFolder !== undefined) {
+        onMoveFolder(target.folder.path, nextFolder);
+      }
+      return;
+    }
+    if (action === "trash") {
+      onDeleteFolder(target.folder.path);
+    }
+  };
+
+  const handleContextAction = (target: ContextTarget, action: string) => {
+    closeContextMenu();
+    window.setTimeout(() => {
+      runContextAction(target, action);
+    }, 0);
+  };
+
+  const renderNoteRow = (note: Note, depth: number, folderLabel?: string) => {
+    const depthStyle = { "--depth": depth } as CSSProperties;
+    const metadata = normalizeNoteMetadata(note);
+    const metadataLine =
+      metadata.subject || metadata.tags.length > 0
+        ? [metadata.subject, metadata.tags.map((tag) => `#${tag}`).join(" ")]
+            .filter(Boolean)
+            .join(" | ")
+        : folderLabel;
+
+    return (
+      <li key={note.id} className="note-list__item">
+        <div
+          className={`note-list__row note-list__row--file ${
+            selectedNoteId === note.id ? "note-list__row--active" : ""
+          }`}
+          style={depthStyle}
+          onContextMenu={(event) => {
+            event.preventDefault();
+            setContextMenu({
+              target: { kind: "note", note },
+              x: event.clientX,
+              y: event.clientY,
+            });
+          }}
+        >
+          <button
+            className="note-list__select note-list__select--file"
+            type="button"
+            onClick={() => {
+              onSelectNote(note);
+            }}
+          >
+            <span className="note-list__file-title">{note.title}</span>
+            {metadataLine && <span className="note-list__file-meta">{metadataLine}</span>}
+          </button>
+          <button
+            className="note-list__split"
+            type="button"
+            onClick={(event) => {
+              event.stopPropagation();
+              openNoteInSplitPane(note);
+            }}
+            aria-label={`Open ${note.title} in a new pane`}
+          >
+            Split
+          </button>
+          <button
+            className="note-list__more"
+            type="button"
+            onClick={(event) => {
+              const rect = event.currentTarget.getBoundingClientRect();
+              setContextMenu({
+                target: { kind: "note", note },
+                x: rect.left,
+                y: rect.bottom + 4,
+              });
+            }}
+            aria-label={`Open actions for ${note.title}`}
+          >
+            ...
+          </button>
+        </div>
+      </li>
+    );
+  };
 
   const renderItems = (items: FileSystemItem[], depth = 0) =>
     items.map((item) => {
       const depthStyle = { "--depth": depth } as CSSProperties;
 
       if (item.type === "folder") {
-        const isExpanded = mergedExpandedFolders.has(item.path);
+        const isExpanded = effectiveExpandedFolders.has(item.path);
         const isSelected = selectedFolderPath === item.path;
         const noteCount = folderNoteCounts.get(item.path) ?? 0;
         const hasChildren = item.children.length > 0;
@@ -213,21 +609,23 @@ export function NoteList({
                 isSelected ? "note-list__row--selected" : ""
               }`}
               style={depthStyle}
+              onContextMenu={(event) => {
+                event.preventDefault();
+                setContextMenu({
+                  target: { kind: "folder", folder: item },
+                  x: event.clientX,
+                  y: event.clientY,
+                });
+              }}
             >
               <button
                 className="note-list__toggle"
                 type="button"
                 onClick={() => {
                   if (!hasChildren) return;
-                  setExpandedFolders((prev) => {
-                    const next = new Set(prev);
-                    if (next.has(item.path)) {
-                      next.delete(item.path);
-                    } else {
-                      next.add(item.path);
-                    }
-                    return next;
-                  });
+                  setExpandedFolders((current) =>
+                    toggleExpandedFolder(pruneExpandedFolders(current, notes), item.path)
+                  );
                 }}
                 aria-label={`${isExpanded ? "Collapse" : "Expand"} ${item.name}`}
                 disabled={!hasChildren}
@@ -239,8 +637,12 @@ export function NoteList({
                 type="button"
                 onClick={() => {
                   onSelectFolder(item.path);
-                  setExpandedFolders((prev) => {
-                    const next = new Set(prev);
+                  setExpandedFolders((current) => {
+                    const prunedCurrent = pruneExpandedFolders(current, notes);
+                    if (prunedCurrent.has(item.path)) {
+                      return prunedCurrent;
+                    }
+                    const next = new Set(prunedCurrent);
                     next.add(item.path);
                     return next;
                   });
@@ -250,6 +652,21 @@ export function NoteList({
                 <span className="note-list__count">
                   {noteCount} {noteCount === 1 ? "note" : "notes"}
                 </span>
+              </button>
+              <button
+                className="note-list__more"
+                type="button"
+                onClick={(event) => {
+                  const rect = event.currentTarget.getBoundingClientRect();
+                  setContextMenu({
+                    target: { kind: "folder", folder: item },
+                    x: rect.left,
+                    y: rect.bottom + 4,
+                  });
+                }}
+                aria-label={`Open actions for folder ${item.name}`}
+              >
+                ...
               </button>
             </div>
             {isExpanded && item.children.length > 0 && (
@@ -261,55 +678,7 @@ export function NoteList({
         );
       }
 
-      return (
-        <li key={item.id} className="note-list__item">
-          <div
-            className={`note-list__row note-list__row--file ${
-              selectedNoteId === item.id ? "note-list__row--active" : ""
-            }`}
-            style={depthStyle}
-            onContextMenu={(event) => {
-              event.preventDefault();
-              setContextMenu({
-                note: item,
-                x: event.clientX,
-                y: event.clientY,
-              });
-            }}
-          >
-            <button
-              className="note-list__select"
-              type="button"
-              onClick={() => {
-                onSelectNote(item);
-              }}
-            >
-              {item.title}
-            </button>
-            <button
-              className="note-list__split"
-              type="button"
-              onClick={(event) => {
-                event.stopPropagation();
-                onOpenInNewPane(item);
-              }}
-              aria-label={`Open ${item.title} in a new pane`}
-            >
-              Split
-            </button>
-            <button
-              className="note-list__delete"
-              type="button"
-              onClick={() => {
-                onDeleteNote(item);
-              }}
-              aria-label={`Delete ${item.title}`}
-            >
-              Delete
-            </button>
-          </div>
-        </li>
-      );
+      return renderNoteRow(item, depth);
     });
 
   return (
@@ -328,6 +697,17 @@ export function NoteList({
           </button>
         )}
       </div>
+
+      {directoryPath && (
+        <input
+          className="input"
+          placeholder="Search filenames"
+          value={searchQuery}
+          onChange={(event) => {
+            setSearchQuery(event.target.value);
+          }}
+        />
+      )}
 
       {directoryPath && (
         <form className="note-list__new note-list__new--templated" onSubmit={handleCreate}>
@@ -391,6 +771,44 @@ export function NoteList({
               Use vault root
             </button>
           )}
+        </div>
+      )}
+
+      {directoryPath && (
+        <div className="note-list__filters">
+          <div className="note-list__filters-header">
+            <div>
+              <p className="note-list__selection-label">Filter Tags</p>
+              <p className="note-list__filters-copy">All selected tags must match.</p>
+            </div>
+            {normalizedSelectedTags.length > 0 && (
+              <button className="note-list__link" type="button" onClick={onClearTagFilters}>
+                Clear filters
+              </button>
+            )}
+          </div>
+          <div className="note-list__filter-tags">
+            {normalizedAvailableTags.map((tag) => {
+              const isActive = normalizedSelectedTags.some(
+                (selectedTag) =>
+                  normalizeTag(selectedTag).toLocaleLowerCase() ===
+                  normalizeTag(tag).toLocaleLowerCase()
+              );
+
+              return (
+                <button
+                  key={tag}
+                  className={`note-list__tag-filter ${isActive ? "note-list__tag-filter--active" : ""}`}
+                  type="button"
+                  onClick={() => {
+                    onToggleTagFilter(tag);
+                  }}
+                >
+                  #{tag}
+                </button>
+              );
+            })}
+          </div>
         </div>
       )}
 
@@ -512,13 +930,90 @@ export function NoteList({
 
       {errorMessage && <p className="note-list__error">{errorMessage}</p>}
 
+      {directoryPath && searchQuery.trim() ? (
+        <div className="note-list__results">
+          <p className="note-list__section-label">Search Results</p>
+          <ul className="note-list__items">
+            {searchResults.length === 0 ? (
+              <li className="note-list__empty">No filenames match that search.</li>
+            ) : (
+              searchResults.map((result) =>
+                renderNoteRow(
+                  result.note,
+                  0,
+                  result.folderLabel === "Vault root" ? undefined : result.folderLabel
+                )
+              )
+            )}
+          </ul>
+        </div>
+      ) : (
+        directoryPath && (
+          <ul className="note-list__items">
+            {totalNotes === 0 && (
+              <li className="note-list__empty">
+                {normalizedSelectedTags.length > 0
+                  ? "No notes match the selected tags."
+                  : "No notes yet. Create the first one."}
+              </li>
+            )}
+            {renderItems(filteredNotes)}
+          </ul>
+        )
+      )}
+
       {directoryPath && (
-        <ul className="note-list__items">
-          {totalNotes === 0 && (
-            <li className="note-list__empty">No notes yet. Create the first one.</li>
+        <section className="note-list__trash">
+          <button
+            className="note-list__trash-toggle"
+            type="button"
+            onClick={() => {
+              setShowTrash((current) => !current);
+            }}
+          >
+            <span>Trash</span>
+            <span>{trashEntries.length}</span>
+          </button>
+          {showTrash && (
+            <ul className="note-list__trash-items">
+              {trashEntries.length === 0 ? (
+                <li className="note-list__empty">Trash is empty.</li>
+              ) : (
+                trashEntries.map((entry) => (
+                  <li key={entry.id} className="note-list__trash-item">
+                    <div>
+                      <p className="note-list__trash-name">{entry.name}</p>
+                      <p className="note-list__subtle">
+                        {toRelativePath(directoryPath, entry.originalPath) ||
+                          "Original path unavailable"}
+                      </p>
+                    </div>
+                    <div className="note-list__trash-actions">
+                      <button
+                        className="note-list__link"
+                        type="button"
+                        onClick={() => {
+                          onRestoreTrashEntry(entry);
+                        }}
+                      >
+                        Restore
+                      </button>
+                      <button
+                        className="note-list__delete"
+                        type="button"
+                        onClick={() => {
+                          onPermanentlyDeleteTrashEntry(entry);
+                        }}
+                      >
+                        Delete
+                      </button>
+                    </div>
+                  </li>
+                ))
+              )}
+            </ul>
           )}
-          {renderItems(notes)}
-        </ul>
+        </section>
       )}
 
       {contextMenu && (
@@ -527,17 +1022,83 @@ export function NoteList({
           style={{ top: contextMenu.y, left: contextMenu.x }}
           role="menu"
         >
-          <button
-            className="note-list__menu-item"
-            type="button"
-            onClick={() => {
-              onOpenInNewPane(contextMenu.note);
-              setContextMenu(null);
-            }}
-            role="menuitem"
-          >
-            Open in split pane
-          </button>
+          {contextMenu.target.kind === "note" ? (
+            <>
+              <button
+                className="note-list__menu-item"
+                type="button"
+                onClick={() => {
+                  handleContextAction(contextMenu.target, "split");
+                }}
+                role="menuitem"
+              >
+                Open in split pane
+              </button>
+              <button
+                className="note-list__menu-item"
+                type="button"
+                onClick={() => {
+                  handleContextAction(contextMenu.target, "rename");
+                }}
+                role="menuitem"
+              >
+                Rename note
+              </button>
+              <button
+                className="note-list__menu-item"
+                type="button"
+                onClick={() => {
+                  handleContextAction(contextMenu.target, "move");
+                }}
+                role="menuitem"
+              >
+                Move note
+              </button>
+              <button
+                className="note-list__menu-item"
+                type="button"
+                onClick={() => {
+                  handleContextAction(contextMenu.target, "trash");
+                }}
+                role="menuitem"
+              >
+                Move to trash
+              </button>
+            </>
+          ) : (
+            <>
+              <button
+                className="note-list__menu-item"
+                type="button"
+                onClick={() => {
+                  handleContextAction(contextMenu.target, "rename");
+                }}
+                role="menuitem"
+              >
+                Rename folder
+              </button>
+              <button
+                className="note-list__menu-item"
+                type="button"
+                onClick={() => {
+                  handleContextAction(contextMenu.target, "move");
+                }}
+                role="menuitem"
+              >
+                Move folder
+              </button>
+              <button
+                className="note-list__menu-item"
+                type="button"
+                onClick={() => {
+                  handleContextAction(contextMenu.target, "trash");
+                }}
+                role="menuitem"
+              >
+                Move to trash
+              </button>
+            </>
+          )}
         </div>
       )}
     </div>

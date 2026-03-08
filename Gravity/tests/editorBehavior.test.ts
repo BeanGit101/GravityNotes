@@ -5,12 +5,14 @@ import { GFM } from "@lezer/markdown";
 import { describe, expect, it } from "vitest";
 import { getCheckboxToggleInsert } from "../src/codemirror/checkboxPlugin";
 import { buildDecorations } from "../src/codemirror/decorationBuilder";
+import { parseCheckboxes } from "../src/editor/checkboxParser";
 
 function collectHiddenMarkerRanges(decorations: DecorationSet): Array<[number, number]> {
   const ranges: Array<[number, number]> = [];
   decorations.between(0, Number.MAX_SAFE_INTEGER, (from, to, value) => {
     const spec = value.spec as { block?: boolean; class?: string; widget?: unknown };
-    const isHiddenMarker = spec.block !== true && spec.class === undefined && spec.widget === undefined;
+    const isHiddenMarker =
+      spec.block !== true && spec.class === undefined && spec.widget === undefined;
     if (isHiddenMarker) {
       ranges.push([from, to]);
     }
@@ -29,7 +31,23 @@ function collectDecorationClasses(decorations: DecorationSet): Set<string> {
   return classes;
 }
 
-function hasOverlap(ranges: Array<[number, number]>, markerFrom: number, markerLength = 1): boolean {
+function collectWidgetNames(decorations: DecorationSet): string[] {
+  const widgetNames: string[] = [];
+  decorations.between(0, Number.MAX_SAFE_INTEGER, (_from, _to, value) => {
+    const spec = value.spec as { widget?: { constructor?: { name?: string } } };
+    const widgetName = spec.widget?.constructor?.name;
+    if (widgetName) {
+      widgetNames.push(widgetName);
+    }
+  });
+  return widgetNames;
+}
+
+function hasOverlap(
+  ranges: Array<[number, number]>,
+  markerFrom: number,
+  markerLength = 1
+): boolean {
   const markerTo = markerFrom + markerLength;
   return ranges.some(([from, to]) => from < markerTo && to > markerFrom);
 }
@@ -42,7 +60,21 @@ describe("editor behavior", () => {
     expect(getCheckboxToggleInsert(false, true)).toBe("[x]");
   });
 
-  it("decorates headings, bold text, and tables with GFM", () => {
+  it("parses interactive list and inline checkboxes while ignoring bare markers", () => {
+    const markdown = [
+      "- [ ] plain task",
+      "Status: - [x] inline checkbox",
+      "[ ] standalone marker",
+      "Inline code `Status: - [ ] ignored` stays literal",
+    ].join("\n");
+
+    expect(parseCheckboxes(markdown)).toMatchObject([
+      { index: 0, kind: "list", checked: false },
+      { index: 1, kind: "inline", checked: true },
+    ]);
+  });
+
+  it("decorates headings, bold text, and active tables with GFM", () => {
     const doc = [
       "# Heading",
       "Setext Heading",
@@ -55,7 +87,7 @@ describe("editor behavior", () => {
 
     const state = EditorState.create({
       doc,
-      selection: { anchor: 0 },
+      selection: { anchor: doc.indexOf("col-a") },
       extensions: [markdown({ extensions: [GFM] })],
     });
 
@@ -69,6 +101,32 @@ describe("editor behavior", () => {
     expect(classes.has("md-table-header")).toBe(true);
     expect(classes.has("md-table-cell")).toBe(true);
     expect(classes.has("md-table-delimiter")).toBe(true);
+  });
+
+  it("replaces inactive tables with a rendered table widget", () => {
+    const doc = ["Intro", "", "| col-a | col-b |", "| --- | --- |", "| one | two |"].join("\n");
+
+    const state = EditorState.create({
+      doc,
+      selection: { anchor: 0 },
+      extensions: [markdown({ extensions: [GFM] })],
+    });
+
+    const widgetNames = collectWidgetNames(buildDecorations(state));
+    expect(widgetNames).toContain("TableWidget");
+  });
+
+  it("keeps raw markdown visible while the cursor is inside a table", () => {
+    const doc = ["Intro", "", "| col-a | col-b |", "| --- | --- |", "| one | two |"].join("\n");
+
+    const state = EditorState.create({
+      doc,
+      selection: { anchor: doc.indexOf("col-b") },
+      extensions: [markdown({ extensions: [GFM] })],
+    });
+
+    const widgetNames = collectWidgetNames(buildDecorations(state));
+    expect(widgetNames).not.toContain("TableWidget");
   });
 
   it("updates hidden marker decorations when cursor moves lines", () => {
