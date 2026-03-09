@@ -49,6 +49,7 @@ import type {
   SidebarPreferences,
   TrashEntry,
 } from "./types/notes";
+import { SaveState } from "./types/shell";
 import type { TemplateSummary } from "./types/templates";
 import {
   DEFAULT_TAG_OPTIONS,
@@ -325,6 +326,7 @@ function App() {
   const [loadingNoteIds, setLoadingNoteIds] = useState<Set<string>>(() => new Set());
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [isLoading, setIsLoading] = useState(false);
+  const [saveState, setSaveState] = useState<SaveState>(SaveState.Saved);
   const [selectedFolderPath, setSelectedFolderPath] = useState<string | null>(null);
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
   const [sidebarPreferences, setSidebarPreferences] = useState<SidebarPreferences>(() =>
@@ -940,6 +942,8 @@ function App() {
       metadata: updatedMetadata,
     });
 
+    setSaveState(SaveState.Saving);
+
     try {
       await updateNote(note.path, serialized);
       setNoteContents((current) => ({
@@ -950,23 +954,25 @@ function App() {
         ...current,
         [noteId]: updatedMetadata,
       }));
+      setSaveState(SaveState.Saved);
     } catch (error) {
       console.error(error);
+      setSaveState(SaveState.Error);
       setErrorMessage("Auto-save failed. Check disk access.");
     }
   };
 
   const handleChangeNoteContent = (noteId: string, nextValue: string) => {
-    setNoteContents((current) => {
-      if (current[noteId] === nextValue) {
-        return current;
-      }
+    if (noteContents[noteId] === nextValue) {
+      return;
+    }
 
-      return { ...current, [noteId]: nextValue };
-    });
+    setSaveState(SaveState.Dirty);
+    setNoteContents((current) => ({ ...current, [noteId]: nextValue }));
   };
 
   const handleChangeNoteMetadata = (noteId: string, metadata: NoteMetadata) => {
+    setSaveState(SaveState.Dirty);
     setNoteMetadataById((current) => ({
       ...current,
       [noteId]: normalizeNoteMetadata({
@@ -1023,6 +1029,7 @@ function App() {
   return (
     <main
       className={`app-shell ${sidebarCollapsed ? "app-shell--collapsed" : ""}`}
+      data-save-state={saveState}
       style={{ "--sidebar-width": `${String(resolvedSidebarWidth)}px` } as CSSProperties}
     >
       <aside className={`app-sidebar ${sidebarCollapsed ? "app-sidebar--collapsed" : ""}`}>
