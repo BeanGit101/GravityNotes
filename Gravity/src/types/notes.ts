@@ -1,4 +1,4 @@
-export type NoteUpdatedSource = "frontmatter" | "filesystem";
+export type NoteUpdatedSource = "metadata" | "filesystem";
 
 export type NoteSortMode = "name" | "updated";
 
@@ -19,6 +19,7 @@ export interface Note {
 export interface NoteMetadata {
   subject?: string;
   tags: string[];
+  createdAt?: string;
   updatedAt?: string;
 }
 

@@ -32,7 +32,19 @@ function normalizeSelection(selection: string | string[] | null): string | null 
 }
 
 function normalizeUpdatedAtSource(source: unknown): NoteUpdatedSource {
-  return source === "frontmatter" ? "frontmatter" : "filesystem";
+  return source === "metadata" ? "metadata" : "filesystem";
+}
+
+function normalizeMetadata(metadata: unknown): NoteMetadata {
+  const candidate = typeof metadata === "object" && metadata ? (metadata as Partial<NoteMetadata>) : {};
+  return {
+    subject: typeof candidate.subject === "string" && candidate.subject.trim() ? candidate.subject.trim() : undefined,
+    tags: Array.isArray(candidate.tags)
+      ? candidate.tags.filter((tag): tag is string => typeof tag === "string")
+      : [],
+    createdAt: typeof candidate.createdAt === "string" ? candidate.createdAt : undefined,
+    updatedAt: typeof candidate.updatedAt === "string" ? candidate.updatedAt : undefined,
+  };
 }
 
 function normalizeNote(note: Pick<Note, "id" | "title" | "path"> & Partial<Note>): Note {
@@ -40,7 +52,7 @@ function normalizeNote(note: Pick<Note, "id" | "title" | "path"> & Partial<Note>
     id: note.id,
     title: note.title,
     path: note.path,
-    subject: note.subject,
+    subject: typeof note.subject === "string" && note.subject.trim() ? note.subject : undefined,
     tags: Array.isArray(note.tags) ? note.tags : [],
     updatedAt:
       typeof note.updatedAt === "number" && Number.isFinite(note.updatedAt) ? note.updatedAt : 0,
@@ -222,11 +234,16 @@ export async function createNote(
   template?: TemplateSeed | null
 ): Promise<Note> {
   await ensureVaultSelected();
-  const initialContent = template ? serializeTemplateMarkdown(template) : "";
   const note = await invoke<Note>("create_note", {
     title,
     folderPath: folderPath ?? null,
-    initialContent,
+    initialBody: template?.body ?? "",
+    metadata: template
+      ? {
+          subject: template.subject,
+          tags: template.tags ?? [],
+        }
+      : null,
   });
   return normalizeNote(note);
 }
@@ -279,7 +296,7 @@ export async function updateNote(path: string, content: string): Promise<void> {
 
 export async function readNoteMetadata(path: string): Promise<NoteMetadata> {
   await ensureVaultSelected();
-  return invoke<NoteMetadata>("read_note_metadata", { path });
+  return normalizeMetadata(await invoke<NoteMetadata>("read_note_metadata", { path }));
 }
 
 export async function writeNoteMetadata(
@@ -287,7 +304,7 @@ export async function writeNoteMetadata(
   metadata: NoteMetadata
 ): Promise<NoteMetadata> {
   await ensureVaultSelected();
-  return invoke<NoteMetadata>("write_note_metadata", { path, metadata });
+  return normalizeMetadata(await invoke<NoteMetadata>("write_note_metadata", { path, metadata }));
 }
 
 export async function deleteNote(path: string): Promise<void> {
@@ -336,9 +353,9 @@ export async function createTemplate(
 
 export async function createTemplateFromNote(
   name: string,
-  markdown: string
+  template: TemplateSeed | string
 ): Promise<TemplateContent> {
-  return createTemplate(name, parseTemplateMarkdown(markdown));
+  return createTemplate(name, typeof template === "string" ? parseTemplateMarkdown(template) : template);
 }
 
 export async function renameTemplate(path: string, newName: string): Promise<TemplateSummary> {
@@ -389,6 +406,20 @@ export async function applyTemplate(
   });
 }
 
+export async function listDictionaryWords(): Promise<string[]> {
+  await ensureVaultSelected();
+  return invoke<string[]>("list_dictionary_words");
+}
+
+export async function addDictionaryWord(word: string): Promise<void> {
+  await ensureVaultSelected();
+  await invoke("add_dictionary_word", { word });
+}
+
+export async function removeDictionaryWord(word: string): Promise<void> {
+  await ensureVaultSelected();
+  await invoke("remove_dictionary_word", { word });
+}
 export function slugify(title: string): string {
   return title
     .trim()
@@ -396,3 +427,4 @@ export function slugify(title: string): string {
     .replace(/[^a-z0-9]+/g, "-")
     .replace(/^-+|-+$/g, "");
 }
+

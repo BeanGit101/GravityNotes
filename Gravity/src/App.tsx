@@ -36,6 +36,7 @@ import {
   restoreTrashEntry,
   selectNotesDirectory,
   updateNote,
+  writeNoteMetadata,
 } from "./services/notesService";
 import { initialPaneSessionState, paneSessionReducer, type OpenMode } from "./state/paneReducer";
 import { markStartupError, markStartupReady, recordStartupEvent } from "./state/startupDiagnostics";
@@ -52,11 +53,8 @@ import type {
 import type { TemplateSummary } from "./types/templates";
 import {
   DEFAULT_TAG_OPTIONS,
-  createEmptyNoteMetadata,
   normalizeNoteMetadata,
   normalizeTag,
-  parseNoteDocument,
-  serializeNoteDocument,
 } from "./utils/frontmatter";
 
 const SIDEBAR_WIDTH_KEY = "gravity.sidebarWidth";
@@ -487,35 +485,39 @@ function App() {
       setLoadingNoteIds(new Set(flatNotes.map((note) => note.id)));
       loadingRef.current = new Set(flatNotes.map((note) => note.id));
 
-      const settledDocuments = await Promise.allSettled(
-        flatNotes.map(async (note) => {
-          const rawContent = await readNote(note.path);
-          return {
-            noteId: note.id,
-            document: parseNoteDocument(rawContent),
-          };
-        })
+      const nextMetadataById: Record<string, NoteMetadata> = Object.fromEntries(
+        flatNotes.map((note) => [
+          note.id,
+          normalizeNoteMetadata({
+            subject: note.subject,
+            tags: note.tags,
+          }),
+        ])
+      );
+
+      const settledBodies = await Promise.allSettled(
+        flatNotes.map(async (note) => ({
+          noteId: note.id,
+          body: await readNote(note.path),
+        }))
       );
 
       const nextContents: Record<string, string> = {};
-      const nextMetadataById: Record<string, NoteMetadata> = {};
       let unreadableCount = 0;
 
-      settledDocuments.forEach((result, index) => {
+      settledBodies.forEach((result, index) => {
         const note = flatNotes[index];
         if (!note) {
           return;
         }
 
         if (result.status === "fulfilled") {
-          nextContents[note.id] = result.value.document.body;
-          nextMetadataById[note.id] = normalizeNoteMetadata(result.value.document.metadata);
+          nextContents[note.id] = result.value.body;
           return;
         }
 
         console.error(result.reason);
         nextContents[note.id] = "";
-        nextMetadataById[note.id] = createEmptyNoteMetadata();
         unreadableCount += 1;
       });
 
@@ -676,10 +678,16 @@ function App() {
       const notePath = note.path;
       const noteTitle = note.title;
 
-      if (
-        Object.prototype.hasOwnProperty.call(noteContents, noteId) &&
-        Object.prototype.hasOwnProperty.call(noteMetadataById, noteId)
-      ) {
+      if (Object.prototype.hasOwnProperty.call(noteContents, noteId)) {
+        if (!Object.prototype.hasOwnProperty.call(noteMetadataById, noteId)) {
+          setNoteMetadataById((current) => ({
+            ...current,
+            [noteId]: normalizeNoteMetadata({
+              subject: note.subject,
+              tags: note.tags,
+            }),
+          }));
+        }
         return;
       }
       if (loadingRef.current.has(noteId)) {
@@ -690,12 +698,15 @@ function App() {
       setLoadingNoteIds((current) => new Set(current).add(noteId));
 
       try {
-        const rawContent = await readNote(notePath);
-        const document = parseNoteDocument(rawContent);
-        setNoteContents((current) => ({ ...current, [noteId]: document.body }));
+        const body = await readNote(notePath);
+        setNoteContents((current) => ({ ...current, [noteId]: body }));
         setNoteMetadataById((current) => ({
           ...current,
-          [noteId]: normalizeNoteMetadata(document.metadata),
+          [noteId]: current[noteId] ??
+            normalizeNoteMetadata({
+              subject: note.subject,
+              tags: note.tags,
+            }),
         }));
       } catch (error) {
         console.error(error);
@@ -913,11 +924,11 @@ function App() {
   const handleCreateTemplateFromNote = async (note: Note, value: string) => {
     setErrorMessage(null);
     try {
-      const markdown = serializeNoteDocument({
+      await createTemplateFromNote(note.title, {
         body: value,
-        metadata: noteMetadataByIdRef.current[note.id] ?? noteMetadataFromNote(note),
+        subject: noteMetadataByIdRef.current[note.id]?.subject ?? note.subject,
+        tags: noteMetadataByIdRef.current[note.id]?.tags ?? note.tags,
       });
-      await createTemplateFromNote(note.title, markdown);
       await refreshTemplates();
     } catch (error) {
       console.error(error);
@@ -931,25 +942,41 @@ function App() {
       return;
     }
 
-    const updatedMetadata = normalizeNoteMetadata({
-      ...nextDocument.metadata,
-      updatedAt: new Date().toISOString(),
-    });
-    const serialized = serializeNoteDocument({
-      body: nextDocument.body,
-      metadata: updatedMetadata,
-    });
+    const nextMetadata = normalizeNoteMetadata(nextDocument.metadata);
+    const currentBody = noteContentsRef.current[noteId] ?? "";
+    const currentMetadata = normalizeNoteMetadata(
+      noteMetadataByIdRef.current[noteId] ?? noteMetadataFromNote(note)
+    );
+    const bodyChanged = currentBody !== nextDocument.body;
+    const metadataChanged = JSON.stringify(currentMetadata) !== JSON.stringify(nextMetadata);
+
+    if (!bodyChanged && !metadataChanged) {
+      return;
+    }
 
     try {
-      await updateNote(note.path, serialized);
-      setNoteContents((current) => ({
-        ...current,
-        [noteId]: nextDocument.body,
-      }));
-      setNoteMetadataById((current) => ({
-        ...current,
-        [noteId]: updatedMetadata,
-      }));
+      if (bodyChanged) {
+        await updateNote(note.path, nextDocument.body);
+      }
+
+      let committedMetadata = nextMetadata;
+      if (metadataChanged) {
+        committedMetadata = normalizeNoteMetadata(await writeNoteMetadata(note.path, nextMetadata));
+      }
+
+      if (bodyChanged) {
+        setNoteContents((current) => ({
+          ...current,
+          [noteId]: nextDocument.body,
+        }));
+      }
+
+      if (bodyChanged || metadataChanged) {
+        setNoteMetadataById((current) => ({
+          ...current,
+          [noteId]: committedMetadata,
+        }));
+      }
     } catch (error) {
       console.error(error);
       setErrorMessage("Auto-save failed. Check disk access.");
@@ -969,10 +996,7 @@ function App() {
   const handleChangeNoteMetadata = (noteId: string, metadata: NoteMetadata) => {
     setNoteMetadataById((current) => ({
       ...current,
-      [noteId]: normalizeNoteMetadata({
-        ...metadata,
-        updatedAt: current[noteId]?.updatedAt,
-      }),
+      [noteId]: normalizeNoteMetadata(metadata),
     }));
   };
 
@@ -1166,3 +1190,10 @@ function App() {
 }
 
 export default App;
+
+
+
+
+
+
+
