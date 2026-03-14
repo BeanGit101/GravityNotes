@@ -17,6 +17,7 @@ const services = vi.hoisted(() => ({
   listNotesWithFolders: vi.fn(async () => []),
   listTemplates: vi.fn(async () => []),
   listTrashEntries: vi.fn(async () => []),
+  listAvailableTags: vi.fn(async () => []),
 }));
 
 vi.mock("../src/services/notesService", () => ({
@@ -32,6 +33,7 @@ vi.mock("../src/services/notesService", () => ({
   listNotesWithFolders: services.listNotesWithFolders,
   listTemplates: services.listTemplates,
   listTrashEntries: services.listTrashEntries,
+  listAvailableTags: services.listAvailableTags,
   moveFolder: vi.fn(),
   moveNote: vi.fn(),
   permanentlyDeleteTrashEntry: vi.fn(),
@@ -115,3 +117,4 @@ describe("App launch state", () => {
     expect(eventNames).toContain("boot.ui.ready");
   });
 });
+

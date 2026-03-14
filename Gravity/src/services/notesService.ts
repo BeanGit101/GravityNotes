@@ -47,6 +47,29 @@ function normalizeMetadata(metadata: unknown): NoteMetadata {
   };
 }
 
+function normalizeTrashEntry(entry: unknown): TrashEntry {
+  const candidate = typeof entry === "object" && entry ? (entry as Record<string, unknown>) : {};
+  const originalPath =
+    typeof candidate["originalPath"] === "string"
+      ? candidate["originalPath"]
+      : typeof candidate["original_path"] === "string"
+        ? candidate["original_path"]
+        : "";
+
+  return {
+    id: typeof candidate["id"] === "string" ? candidate["id"] : "",
+    name: typeof candidate["name"] === "string" ? candidate["name"] : "",
+    originalPath,
+    type: candidate["type"] === "folder" ? "folder" : "file",
+    deletedAt:
+      typeof candidate["deletedAt"] === "number"
+        ? candidate["deletedAt"]
+        : typeof candidate["deleted_at"] === "number"
+          ? candidate["deleted_at"]
+          : 0,
+  };
+}
+
 function normalizeNote(note: Pick<Note, "id" | "title" | "path"> & Partial<Note>): Note {
   return {
     id: note.id,
@@ -225,8 +248,16 @@ export async function listNotesWithFolders(): Promise<FileSystemItem[]> {
 
 export async function listTrashEntries(): Promise<TrashEntry[]> {
   await ensureVaultSelected();
-  return invoke<TrashEntry[]>("list_trash_entries");
+  const entries = await invoke<TrashEntry[]>("list_trash_entries");
+  return entries.map((entry) => normalizeTrashEntry(entry));
 }
+
+export async function listAvailableTags(): Promise<string[]> {
+  await ensureVaultSelected();
+  const tags = await invoke<unknown[]>("list_available_tags");
+  return tags.filter((tag): tag is string => typeof tag === "string" && tag.trim().length > 0);
+}
+
 
 export async function createNote(
   title: string,
@@ -427,4 +458,6 @@ export function slugify(title: string): string {
     .replace(/[^a-z0-9]+/g, "-")
     .replace(/^-+|-+$/g, "");
 }
+
+
 

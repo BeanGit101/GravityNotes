@@ -57,6 +57,11 @@ CREATE TABLE IF NOT EXISTS note_tags (
   PRIMARY KEY (note_id, tag_normalized)
 );
 
+CREATE TABLE IF NOT EXISTS tag_catalog (
+  tag_normalized TEXT PRIMARY KEY,
+  tag TEXT NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS templates (
   template_rel_path TEXT PRIMARY KEY,
   name TEXT NOT NULL,
@@ -85,6 +90,7 @@ CREATE TABLE IF NOT EXISTS schema_migrations (
 CREATE INDEX IF NOT EXISTS idx_notes_note_rel_path ON notes(note_rel_path);
 CREATE INDEX IF NOT EXISTS idx_notes_file_exists_rel_path ON notes(file_exists, note_rel_path);
 CREATE INDEX IF NOT EXISTS idx_note_tags_tag_normalized ON note_tags(tag_normalized);
+CREATE INDEX IF NOT EXISTS idx_tag_catalog_tag ON tag_catalog(tag);
 CREATE INDEX IF NOT EXISTS idx_note_metadata_fields_field_name ON note_metadata_fields(field_name);
 CREATE INDEX IF NOT EXISTS idx_note_metadata_fields_field_text ON note_metadata_fields(field_name, value_text);
 CREATE INDEX IF NOT EXISTS idx_note_metadata_fields_field_integer ON note_metadata_fields(field_name, value_integer);
@@ -247,6 +253,8 @@ struct DbNoteSummary {
 struct MetadataBackup {
     metadata_version: i64,
     generated_at: i64,
+    #[serde(default)]
+    available_tags: Vec<String>,
     notes: Vec<MetadataBackupNote>,
 }
 
@@ -779,6 +787,7 @@ fn open_database(vault_path: &Path) -> Result<Connection, String> {
         .map_err(|error| format!("Unable to open database {}: {error}", db_path.display()))?;
     apply_pragmas(&connection)?;
     run_migrations(&connection)?;
+    backfill_tag_catalog(&connection)?;
     Ok(connection)
 }
 
@@ -819,6 +828,20 @@ fn run_migrations(connection: &Connection) -> Result<(), String> {
     Ok(())
 }
 
+fn backfill_tag_catalog(connection: &Connection) -> Result<(), String> {
+    connection
+        .execute(
+            "
+            INSERT OR REPLACE INTO tag_catalog (tag_normalized, tag)
+            SELECT note_tags.tag_normalized, MIN(note_tags.tag)
+            FROM note_tags
+            GROUP BY note_tags.tag_normalized
+            ",
+            [],
+        )
+        .map_err(|error| format!("Unable to backfill tag catalog: {error}"))?;
+    Ok(())
+}
 fn upsert_empty_note_metadata(
     transaction: &Transaction<'_>,
     note_id: &str,
@@ -1027,7 +1050,25 @@ fn write_metadata_fields(
     Ok(())
 }
 
+fn upsert_tag_catalog_entries(transaction: &Transaction<'_>, tags: &[String]) -> Result<(), String> {
+    for tag in tags {
+        transaction
+            .execute(
+                "
+                INSERT INTO tag_catalog (tag_normalized, tag)
+                VALUES (?1, ?2)
+                ON CONFLICT(tag_normalized) DO UPDATE SET tag = excluded.tag
+                ",
+                params![tag.to_lowercase(), tag],
+            )
+            .map_err(|error| format!("Unable to store tag catalog entry {tag}: {error}"))?;
+    }
+
+    Ok(())
+}
+
 fn write_note_tags(transaction: &Transaction<'_>, note_id: &str, tags: &[String]) -> Result<(), String> {
+    upsert_tag_catalog_entries(transaction, tags)?;
     transaction
         .execute("DELETE FROM note_tags WHERE note_id = ?1", params![note_id])
         .map_err(|error| format!("Unable to clear tags for {note_id}: {error}"))?;
@@ -1181,6 +1222,20 @@ fn write_note_metadata_value(
     read_note_metadata_value(connection, note_id)
 }
 
+fn list_available_tags_internal(connection: &Connection) -> Result<Vec<String>, String> {
+    let mut statement = connection
+        .prepare("SELECT tag FROM tag_catalog ORDER BY tag_normalized, tag")
+        .map_err(|error| format!("Unable to prepare available tag query: {error}"))?;
+    let rows = statement
+        .query_map([], |row| row.get::<_, String>(0))
+        .map_err(|error| format!("Unable to query available tags: {error}"))?;
+
+    let mut tags = Vec::new();
+    for row in rows {
+        tags.push(row.map_err(|error| format!("Unable to read available tag: {error}"))?);
+    }
+    Ok(tags)
+}
 fn update_note_file_state(connection: &Connection, note_id: &str, file_mtime_ms: i64) -> Result<(), String> {
     connection
         .execute(
@@ -1872,6 +1927,7 @@ fn sync_templates_index(connection: &Connection, vault_path: &Path) -> Result<()
 }
 
 fn export_metadata_backup(connection: &Connection) -> Result<MetadataBackup, String> {
+    let available_tags = list_available_tags_internal(connection)?;
     let mut note_statement = connection
         .prepare(
             "
@@ -1966,6 +2022,7 @@ fn export_metadata_backup(connection: &Connection) -> Result<MetadataBackup, Str
     Ok(MetadataBackup {
         metadata_version: METADATA_VERSION,
         generated_at: current_timestamp_ms(),
+        available_tags,
         notes,
     })
 }
@@ -2019,6 +2076,7 @@ fn restore_metadata_backup(
     let transaction = connection
         .unchecked_transaction()
         .map_err(|error| format!("Unable to start metadata restore transaction: {error}"))?;
+    let available_tags = backup.available_tags;
     for note in backup.notes {
         let absolute_path = absolute_path_from_relative(vault_path, &note.note_rel_path);
         let (file_exists, file_mtime_ms, index_status) = match fs::metadata(&absolute_path) {
@@ -2060,6 +2118,7 @@ fn restore_metadata_backup(
         write_note_tags(&transaction, &note.note_id, &note.tags)?;
         write_metadata_fields(&transaction, &note.note_id, &note.metadata_fields)?;
     }
+    upsert_tag_catalog_entries(&transaction, &available_tags)?;
     transaction
         .commit()
         .map_err(|error| format!("Unable to commit metadata restore: {error}"))?;
@@ -2211,6 +2270,13 @@ fn list_vault_entries(state: tauri::State<VaultState>) -> Result<Vec<FileSystemI
 fn list_trash_entries(state: tauri::State<VaultState>) -> Result<Vec<TrashEntry>, String> {
     let vault_path = get_selected_vault(&state)?;
     list_trash(&vault_path)
+}
+
+#[tauri::command]
+fn list_available_tags(state: tauri::State<VaultState>) -> Result<Vec<String>, String> {
+    let vault_path = get_selected_vault(&state)?;
+    let connection = open_database(&vault_path)?;
+    list_available_tags_internal(&connection)
 }
 
 #[tauri::command]
@@ -2798,6 +2864,7 @@ pub fn run() {
             scan_vault_notes,
             list_vault_entries,
             list_trash_entries,
+            list_available_tags,
             create_note,
             rename_note,
             move_note,
@@ -2828,6 +2895,44 @@ pub fn run() {
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
+}
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn migrations_backfill_tag_catalog_for_legacy_databases() {
+        let connection = Connection::open_in_memory().expect("in-memory database");
+        connection
+            .execute_batch(
+                r#"
+                CREATE TABLE notes (
+                  note_id TEXT PRIMARY KEY,
+                  note_rel_path TEXT UNIQUE NOT NULL,
+                  file_mtime_ms INTEGER,
+                  last_seen_scan INTEGER,
+                  file_exists INTEGER NOT NULL DEFAULT 1,
+                  index_status TEXT
+                );
+                CREATE TABLE note_tags (
+                  note_id TEXT NOT NULL REFERENCES notes(note_id) ON DELETE CASCADE,
+                  tag TEXT NOT NULL,
+                  tag_normalized TEXT NOT NULL,
+                  PRIMARY KEY (note_id, tag_normalized)
+                );
+                INSERT INTO notes (note_id, note_rel_path, file_exists) VALUES ('note-1', 'alpha.md', 1);
+                INSERT INTO note_tags (note_id, tag, tag_normalized)
+                VALUES ('note-1', 'Custom Tag', 'custom tag');
+                "#,
+            )
+            .expect("legacy schema setup");
+
+        run_migrations(&connection).expect("run migrations");
+        backfill_tag_catalog(&connection).expect("backfill tag catalog");
+
+        let tags = list_available_tags_internal(&connection).expect("list available tags");
+        assert_eq!(tags, vec![String::from("Custom Tag")]);
+    }
 }
 
 
