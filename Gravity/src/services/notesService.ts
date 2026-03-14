@@ -17,6 +17,7 @@ import type {
   TrashEntry,
 } from "../types/notes";
 import type { TemplateContent, TemplateSummary } from "../types/templates";
+import type { CreateMemoryInput, DeleteMemoryResult, Memory, UpdateMemoryInput } from "../types/memories";
 
 const NOTES_DIRECTORY_KEY = "gravity.notesDirectory";
 
@@ -45,6 +46,16 @@ function normalizeNote(note: Pick<Note, "id" | "title" | "path"> & Partial<Note>
     updatedAt:
       typeof note.updatedAt === "number" && Number.isFinite(note.updatedAt) ? note.updatedAt : 0,
     updatedAtSource: normalizeUpdatedAtSource(note.updatedAtSource),
+  };
+}
+
+function normalizeMemory(memory: Memory): Memory {
+  return {
+    id: memory.id,
+    title: memory.title,
+    content: memory.content,
+    originNote: typeof memory.originNote === "string" ? memory.originNote : null,
+    createdAt: memory.createdAt,
   };
 }
 
@@ -214,6 +225,39 @@ export async function listNotesWithFolders(): Promise<FileSystemItem[]> {
 export async function listTrashEntries(): Promise<TrashEntry[]> {
   await ensureVaultSelected();
   return invoke<TrashEntry[]>("list_trash_entries");
+}
+
+export async function createMemory(input: CreateMemoryInput): Promise<Memory> {
+  await ensureVaultSelected();
+  return normalizeMemory(
+    await invoke<Memory>("create_memory", {
+      title: input.title ?? null,
+      content: input.content,
+      originNote: input.originNote ?? null,
+    })
+  );
+}
+
+export async function listMemories(): Promise<Memory[]> {
+  await ensureVaultSelected();
+  const memories = await invoke<Memory[]>("list_memories");
+  return memories.map((memory) => normalizeMemory(memory));
+}
+
+export async function updateMemory(input: UpdateMemoryInput): Promise<Memory> {
+  await ensureVaultSelected();
+  return normalizeMemory(
+    await invoke<Memory>("update_memory", {
+      id: input.id,
+      title: input.title ?? null,
+      content: input.content ?? null,
+    })
+  );
+}
+
+export async function deleteMemory(id: string): Promise<DeleteMemoryResult> {
+  await ensureVaultSelected();
+  return invoke<DeleteMemoryResult>("delete_memory", { id });
 }
 
 export async function createNote(
