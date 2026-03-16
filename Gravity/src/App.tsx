@@ -52,11 +52,7 @@ import type {
   TrashEntry,
 } from "./types/notes";
 import type { TemplateSummary } from "./types/templates";
-import {
-  DEFAULT_TAG_OPTIONS,
-  normalizeNoteMetadata,
-  normalizeTag,
-} from "./utils/frontmatter";
+import { DEFAULT_TAG_OPTIONS, normalizeNoteMetadata, normalizeTag } from "./utils/frontmatter";
 
 const SIDEBAR_WIDTH_KEY = "gravity.sidebarWidth";
 const SIDEBAR_PREFERENCES_KEY = "gravity.sidebarPreferences";
@@ -814,7 +810,8 @@ function App() {
         setNoteContents((current) => ({ ...current, [noteId]: body }));
         setNoteMetadataById((current) => ({
           ...current,
-          [noteId]: current[noteId] ??
+          [noteId]:
+            current[noteId] ??
             normalizeNoteMetadata({
               subject: note.subject,
               tags: note.tags,
@@ -1305,18 +1302,3 @@ function App() {
 }
 
 export default App;
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-

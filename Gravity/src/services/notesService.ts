@@ -36,9 +36,13 @@ function normalizeUpdatedAtSource(source: unknown): NoteUpdatedSource {
 }
 
 function normalizeMetadata(metadata: unknown): NoteMetadata {
-  const candidate = typeof metadata === "object" && metadata ? (metadata as Partial<NoteMetadata>) : {};
+  const candidate =
+    typeof metadata === "object" && metadata ? (metadata as Partial<NoteMetadata>) : {};
   return {
-    subject: typeof candidate.subject === "string" && candidate.subject.trim() ? candidate.subject.trim() : undefined,
+    subject:
+      typeof candidate.subject === "string" && candidate.subject.trim()
+        ? candidate.subject.trim()
+        : undefined,
     tags: Array.isArray(candidate.tags)
       ? candidate.tags.filter((tag): tag is string => typeof tag === "string")
       : [],
@@ -258,7 +262,6 @@ export async function listAvailableTags(): Promise<string[]> {
   return tags.filter((tag): tag is string => typeof tag === "string" && tag.trim().length > 0);
 }
 
-
 export async function createNote(
   title: string,
   folderPath?: string | null,
@@ -386,7 +389,10 @@ export async function createTemplateFromNote(
   name: string,
   template: TemplateSeed | string
 ): Promise<TemplateContent> {
-  return createTemplate(name, typeof template === "string" ? parseTemplateMarkdown(template) : template);
+  return createTemplate(
+    name,
+    typeof template === "string" ? parseTemplateMarkdown(template) : template
+  );
 }
 
 export async function renameTemplate(path: string, newName: string): Promise<TemplateSummary> {
@@ -458,6 +464,3 @@ export function slugify(title: string): string {
     .replace(/[^a-z0-9]+/g, "-")
     .replace(/^-+|-+$/g, "");
 }
-
-
-

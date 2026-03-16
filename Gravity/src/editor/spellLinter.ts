@@ -182,7 +182,9 @@ const shouldSkipWord = (word: string, allowlist: Set<string>) => {
 };
 
 const refreshDiagnosticsImmediately = (editorView: EditorView, allowlist: Set<string>) => {
-  editorView.dispatch(setDiagnostics(editorView.state, linterDiagnosticSource(editorView, allowlist)));
+  editorView.dispatch(
+    setDiagnostics(editorView.state, linterDiagnosticSource(editorView, allowlist))
+  );
 };
 
 const linterDiagnosticSource = (view: EditorView, allowlist: Set<string>) => {

@@ -1024,4 +1024,3 @@ export function NoteEditor({
     </section>
   );
 }
-
