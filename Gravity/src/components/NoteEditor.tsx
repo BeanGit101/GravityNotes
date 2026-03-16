@@ -37,7 +37,7 @@ import { createEmptyNoteMetadata, normalizeNoteMetadata, normalizeTag } from "..
 import { MarkdownPreview } from "./MarkdownPreview";
 
 interface NoteEditorProps {
-  note: Pick<Note, "id" | "title" | "path"> | null;
+  note: Pick<Note, "id" | "title" | "path" | "updatedAt"> | null;
   metadata?: NoteMetadata;
   value: string;
   availableTags?: string[];
@@ -58,7 +58,7 @@ function createDocumentSnapshot(body: string, metadata: NoteMetadata): string {
   });
 }
 
-function formatUpdatedAt(updatedAt?: string): string | null {
+function formatUpdatedAt(updatedAt?: number): string | null {
   if (!updatedAt) {
     return null;
   }
@@ -133,9 +133,9 @@ function OptionalFrontmatterPanel({
     <section className="note-editor__frontmatter">
       <div className="note-editor__frontmatter-header">
         <div className="note-editor__frontmatter-copy">
-          <p className="note-editor__frontmatter-title">Frontmatter (optional)</p>
+          <p className="note-editor__frontmatter-title">Details (optional)</p>
           <p className="note-editor__frontmatter-description">
-            Add a subject or tags only if they help organize this note.
+            Store a subject or tags in note metadata without changing the note body.
           </p>
           {!isExpanded && frontmatterSummary && (
             <p className="note-editor__frontmatter-summary">{frontmatterSummary}</p>
@@ -318,7 +318,7 @@ export function NoteEditor({
   const canTogglePreviewTasks = Boolean(note) && !isLoading;
   const isEditable = canToggleCheckboxes;
   const isMetadataEditable = Boolean(note) && !isLoading;
-  const updatedAtLabel = note ? formatUpdatedAt(noteMetadata.updatedAt) : null;
+  const updatedAtLabel = note ? formatUpdatedAt(note.updatedAt) : null;
   const suggestedTags = useMemo(() => {
     const assigned = new Set(noteMetadata.tags.map((tag) => normalizeTag(tag).toLocaleLowerCase()));
     return normalizedAvailableTags.filter(

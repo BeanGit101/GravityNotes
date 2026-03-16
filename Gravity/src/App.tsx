@@ -25,6 +25,7 @@ import {
   listNotesWithFolders,
   listTemplates,
   listTrashEntries,
+  listAvailableTags,
   moveFolder,
   moveNote,
   permanentlyDeleteTrashEntry,
@@ -36,6 +37,7 @@ import {
   restoreTrashEntry,
   selectNotesDirectory,
   updateNote,
+  writeNoteMetadata,
 } from "./services/notesService";
 import { initialPaneSessionState, paneSessionReducer, type OpenMode } from "./state/paneReducer";
 import { markStartupError, markStartupReady, recordStartupEvent } from "./state/startupDiagnostics";
@@ -50,20 +52,14 @@ import type {
   TrashEntry,
 } from "./types/notes";
 import type { TemplateSummary } from "./types/templates";
-import {
-  DEFAULT_TAG_OPTIONS,
-  createEmptyNoteMetadata,
-  normalizeNoteMetadata,
-  normalizeTag,
-  parseNoteDocument,
-  serializeNoteDocument,
-} from "./utils/frontmatter";
+import { DEFAULT_TAG_OPTIONS, normalizeNoteMetadata, normalizeTag } from "./utils/frontmatter";
 
 const SIDEBAR_WIDTH_KEY = "gravity.sidebarWidth";
 const SIDEBAR_PREFERENCES_KEY = "gravity.sidebarPreferences";
 const SIDEBAR_MIN_WIDTH = 200;
 const SIDEBAR_COLLAPSED_WIDTH = 64;
 const SIDEBAR_MAX_RATIO = 0.6;
+const TAG_CATALOG_WARNING = "Tags could not be fully loaded; suggestions may be incomplete.";
 
 const defaultSidebarPreferences: SidebarPreferences = {
   searchText: "",
@@ -313,11 +309,62 @@ function removeSetValues(current: Set<string>, noteIds: Set<string>): Set<string
   return new Set(Array.from(current).filter((value) => !noteIds.has(value)));
 }
 
+function mergeTagCatalog(current: string[], nextTags: string[]): string[] {
+  const tagsByKey = new Map<string, string>();
+
+  current.forEach((tag) => {
+    const normalized = normalizeTag(tag);
+    if (!normalized) {
+      return;
+    }
+    tagsByKey.set(normalized.toLocaleLowerCase(), normalized);
+  });
+
+  nextTags.forEach((tag) => {
+    const normalized = normalizeTag(tag);
+    if (!normalized) {
+      return;
+    }
+    tagsByKey.set(normalized.toLocaleLowerCase(), normalized);
+  });
+
+  return Array.from(tagsByKey.values()).sort((left, right) => left.localeCompare(right));
+}
+
+function collectTagsFromNotes(notes: Note[]): string[] {
+  return notes.reduce<string[]>((catalog, note) => mergeTagCatalog(catalog, note.tags), []);
+}
+
+function combineLoadWarnings(...messages: Array<string | null>): string | null {
+  const nextMessages = messages.filter((message): message is string => Boolean(message));
+  if (nextMessages.length === 0) {
+    return null;
+  }
+
+  return nextMessages.join(" ");
+}
+
+function getVaultLoadErrorMessage(error: unknown): string {
+  const message = error instanceof Error ? error.message : String(error);
+  const normalized = message.toLocaleLowerCase();
+
+  if (
+    normalized.includes("permission denied") ||
+    normalized.includes("access is denied") ||
+    normalized.includes("operation not permitted")
+  ) {
+    return "Unable to load notes. Check folder permissions.";
+  }
+
+  return message ? `Unable to load notes. ${message}` : "Unable to load notes.";
+}
+
 function App() {
   const [notesDirectory, setNotesDirectory] = useState(getNotesDirectory());
   const [notes, setNotes] = useState<FileSystemItem[]>([]);
   const [templates, setTemplates] = useState<TemplateSummary[]>([]);
   const [trashEntries, setTrashEntries] = useState<TrashEntry[]>([]);
+  const [persistedTagCatalog, setPersistedTagCatalog] = useState<string[]>([]);
   const [paneSession, dispatchPane] = useReducer(paneSessionReducer, initialPaneSessionState);
   const [noteContents, setNoteContents] = useState<Record<string, string>>({});
   const [noteMetadataById, setNoteMetadataById] = useState<Record<string, NoteMetadata>>({});
@@ -350,6 +397,8 @@ function App() {
   const noteContentsRef = useRef<Record<string, string>>({});
   const noteMetadataByIdRef = useRef<Record<string, NoteMetadata>>({});
   const noteViewModesRef = useRef<Record<string, NoteViewMode>>({});
+  const pendingMetadataWritesRef = useRef<Map<string, Promise<void>>>(new Map());
+  const metadataWriteVersionRef = useRef<Record<string, number>>({});
   const cryptoRef = useRef((globalThis as { crypto?: Crypto }).crypto);
 
   useEffect(() => {
@@ -387,30 +436,69 @@ function App() {
 
   const availableTags = useMemo(() => {
     const defaultTagKeys = new Set(DEFAULT_TAG_OPTIONS.map((tag) => tag.toLocaleLowerCase()));
-    const customTags = new Map<string, string>();
+    const customTags = persistedTagCatalog.filter(
+      (tag) => !defaultTagKeys.has(normalizeTag(tag).toLocaleLowerCase())
+    );
 
-    Object.values(noteMetadataById).forEach((metadata) => {
-      const normalized = normalizeNoteMetadata(metadata);
-      normalized.tags.forEach((tag) => {
-        const key = tag.toLocaleLowerCase();
-        if (defaultTagKeys.has(key) || customTags.has(key)) {
-          return;
-        }
-        customTags.set(key, tag);
-      });
-    });
-
-    return [
-      ...DEFAULT_TAG_OPTIONS,
-      ...Array.from(customTags.values()).sort((left, right) => left.localeCompare(right)),
-    ];
-  }, [noteMetadataById]);
+    return [...DEFAULT_TAG_OPTIONS, ...customTags];
+  }, [persistedTagCatalog]);
 
   const getNoteById = useCallback((noteId: string) => noteIndex.get(noteId) ?? null, [noteIndex]);
 
   const getNoteViewMode = useCallback(
     (noteId: string): NoteViewMode => noteViewModes[noteId] ?? "edit",
     [noteViewModes]
+  );
+
+  const waitForPendingMetadataWrites = useCallback(async () => {
+    const pendingWrites = Array.from(pendingMetadataWritesRef.current.values());
+    if (pendingWrites.length === 0) {
+      return;
+    }
+
+    await Promise.allSettled(pendingWrites);
+  }, []);
+
+  const persistNoteMetadata = useCallback(
+    (noteId: string, metadata: NoteMetadata) => {
+      const note = getNoteById(noteId);
+      if (!note) {
+        return;
+      }
+
+      const nextMetadata = normalizeNoteMetadata(metadata);
+      const nextVersion = (metadataWriteVersionRef.current[noteId] ?? 0) + 1;
+      metadataWriteVersionRef.current[noteId] = nextVersion;
+      setPersistedTagCatalog((current) => mergeTagCatalog(current, nextMetadata.tags));
+
+      const writeOperation = (async () => {
+        try {
+          const committedMetadata = normalizeNoteMetadata(
+            await writeNoteMetadata(note.path, nextMetadata)
+          );
+
+          if (metadataWriteVersionRef.current[noteId] !== nextVersion) {
+            return;
+          }
+
+          setNoteMetadataById((current) => ({
+            ...current,
+            [noteId]: committedMetadata,
+          }));
+          setPersistedTagCatalog((current) => mergeTagCatalog(current, committedMetadata.tags));
+        } catch (error) {
+          console.error(error);
+          setErrorMessage("Unable to save note details.");
+        } finally {
+          if (metadataWriteVersionRef.current[noteId] === nextVersion) {
+            pendingMetadataWritesRef.current.delete(noteId);
+          }
+        }
+      })();
+
+      pendingMetadataWritesRef.current.set(noteId, writeOperation);
+    },
+    [getNoteById]
   );
 
   const toggleNoteViewMode = useCallback((noteId: string) => {
@@ -463,6 +551,7 @@ function App() {
       setNotes([]);
       setTemplates([]);
       setTrashEntries([]);
+      setPersistedTagCatalog([]);
       dispatchPane({ type: "reset" });
       setNoteContents({});
       setNoteMetadataById({});
@@ -477,51 +566,70 @@ function App() {
     setErrorMessage(null);
 
     try {
+      await waitForPendingMetadataWrites();
       const [entries, trash, templateSummaries] = await Promise.all([
         listNotesWithFolders(),
         listTrashEntries(),
         listTemplates(),
       ]);
       const flatNotes = flattenNotes(entries);
+      const fallbackTagCatalog = collectTagsFromNotes(flatNotes);
+      let nextTagCatalog = fallbackTagCatalog;
+      let tagCatalogWarning: string | null = null;
+
+      try {
+        const tagCatalog = await listAvailableTags();
+        nextTagCatalog = mergeTagCatalog(fallbackTagCatalog, tagCatalog);
+      } catch (error) {
+        console.error(error);
+        const message = error instanceof Error ? error.message : String(error);
+        recordStartupEvent("vault.tags.load.failed", { message });
+        tagCatalogWarning = TAG_CATALOG_WARNING;
+      }
 
       setLoadingNoteIds(new Set(flatNotes.map((note) => note.id)));
       loadingRef.current = new Set(flatNotes.map((note) => note.id));
 
-      const settledDocuments = await Promise.allSettled(
-        flatNotes.map(async (note) => {
-          const rawContent = await readNote(note.path);
-          return {
-            noteId: note.id,
-            document: parseNoteDocument(rawContent),
-          };
-        })
+      const nextMetadataById: Record<string, NoteMetadata> = Object.fromEntries(
+        flatNotes.map((note) => [
+          note.id,
+          normalizeNoteMetadata({
+            subject: note.subject,
+            tags: note.tags,
+          }),
+        ])
+      );
+
+      const settledBodies = await Promise.allSettled(
+        flatNotes.map(async (note) => ({
+          noteId: note.id,
+          body: await readNote(note.path),
+        }))
       );
 
       const nextContents: Record<string, string> = {};
-      const nextMetadataById: Record<string, NoteMetadata> = {};
       let unreadableCount = 0;
 
-      settledDocuments.forEach((result, index) => {
+      settledBodies.forEach((result, index) => {
         const note = flatNotes[index];
         if (!note) {
           return;
         }
 
         if (result.status === "fulfilled") {
-          nextContents[note.id] = result.value.document.body;
-          nextMetadataById[note.id] = normalizeNoteMetadata(result.value.document.metadata);
+          nextContents[note.id] = result.value.body;
           return;
         }
 
         console.error(result.reason);
         nextContents[note.id] = "";
-        nextMetadataById[note.id] = createEmptyNoteMetadata();
         unreadableCount += 1;
       });
 
       setNotes(entries);
       setTemplates(templateSummaries);
       setTrashEntries(trash);
+      setPersistedTagCatalog(nextTagCatalog);
       setSelectedFolderPath((current) => {
         if (!current) {
           return current;
@@ -555,31 +663,32 @@ function App() {
         noteCount: existingIds.size,
         templateCount: templateSummaries.length,
         trashCount: trash.length,
+        tagCatalogFallback: tagCatalogWarning !== null,
       });
 
-      if (unreadableCount > 0) {
-        setErrorMessage(
-          `${String(unreadableCount)} note${unreadableCount === 1 ? " was" : "s were"} unreadable during load.`
-        );
-      }
+      const unreadableWarning =
+        unreadableCount > 0
+          ? `${String(unreadableCount)} note${unreadableCount === 1 ? " was" : "s were"} unreadable during load.`
+          : null;
+      setErrorMessage(combineLoadWarnings(tagCatalogWarning, unreadableWarning));
     } catch (error) {
       console.error(error);
       const message = error instanceof Error ? error.message : String(error);
       markStartupError("vault.refresh.failed", { message });
-      setErrorMessage("Unable to load notes. Check folder permissions.");
+      setErrorMessage(getVaultLoadErrorMessage(error));
       setLoadingNoteIds(new Set());
       loadingRef.current = new Set();
     } finally {
       setIsLoading(false);
     }
-  }, [notesDirectory]);
+  }, [notesDirectory, waitForPendingMetadataWrites]);
 
   useEffect(() => {
     if (!didRecordMountRef.current) {
       didRecordMountRef.current = true;
       recordStartupEvent("app.mounted", { hasSelectedVault: Boolean(notesDirectory) });
     }
-  }, [notesDirectory]);
+  }, [notesDirectory, waitForPendingMetadataWrites]);
 
   useEffect(() => {
     if (didMarkReadyRef.current) {
@@ -652,6 +761,7 @@ function App() {
   const handleOpenVault = async () => {
     setErrorMessage(null);
     try {
+      await waitForPendingMetadataWrites();
       const directory = await selectNotesDirectory();
       if (directory) {
         setNotesDirectory(directory);
@@ -676,10 +786,16 @@ function App() {
       const notePath = note.path;
       const noteTitle = note.title;
 
-      if (
-        Object.prototype.hasOwnProperty.call(noteContents, noteId) &&
-        Object.prototype.hasOwnProperty.call(noteMetadataById, noteId)
-      ) {
+      if (Object.prototype.hasOwnProperty.call(noteContents, noteId)) {
+        if (!Object.prototype.hasOwnProperty.call(noteMetadataById, noteId)) {
+          setNoteMetadataById((current) => ({
+            ...current,
+            [noteId]: normalizeNoteMetadata({
+              subject: note.subject,
+              tags: note.tags,
+            }),
+          }));
+        }
         return;
       }
       if (loadingRef.current.has(noteId)) {
@@ -690,12 +806,16 @@ function App() {
       setLoadingNoteIds((current) => new Set(current).add(noteId));
 
       try {
-        const rawContent = await readNote(notePath);
-        const document = parseNoteDocument(rawContent);
-        setNoteContents((current) => ({ ...current, [noteId]: document.body }));
+        const body = await readNote(notePath);
+        setNoteContents((current) => ({ ...current, [noteId]: body }));
         setNoteMetadataById((current) => ({
           ...current,
-          [noteId]: normalizeNoteMetadata(document.metadata),
+          [noteId]:
+            current[noteId] ??
+            normalizeNoteMetadata({
+              subject: note.subject,
+              tags: note.tags,
+            }),
         }));
       } catch (error) {
         console.error(error);
@@ -913,11 +1033,11 @@ function App() {
   const handleCreateTemplateFromNote = async (note: Note, value: string) => {
     setErrorMessage(null);
     try {
-      const markdown = serializeNoteDocument({
+      await createTemplateFromNote(note.title, {
         body: value,
-        metadata: noteMetadataByIdRef.current[note.id] ?? noteMetadataFromNote(note),
+        subject: noteMetadataByIdRef.current[note.id]?.subject ?? note.subject,
+        tags: noteMetadataByIdRef.current[note.id]?.tags ?? note.tags,
       });
-      await createTemplateFromNote(note.title, markdown);
       await refreshTemplates();
     } catch (error) {
       console.error(error);
@@ -931,25 +1051,41 @@ function App() {
       return;
     }
 
-    const updatedMetadata = normalizeNoteMetadata({
-      ...nextDocument.metadata,
-      updatedAt: new Date().toISOString(),
-    });
-    const serialized = serializeNoteDocument({
-      body: nextDocument.body,
-      metadata: updatedMetadata,
-    });
+    const nextMetadata = normalizeNoteMetadata(nextDocument.metadata);
+    const currentBody = noteContentsRef.current[noteId] ?? "";
+    const currentMetadata = normalizeNoteMetadata(
+      noteMetadataByIdRef.current[noteId] ?? noteMetadataFromNote(note)
+    );
+    const bodyChanged = currentBody !== nextDocument.body;
+    const metadataChanged = JSON.stringify(currentMetadata) !== JSON.stringify(nextMetadata);
+
+    if (!bodyChanged && !metadataChanged) {
+      return;
+    }
 
     try {
-      await updateNote(note.path, serialized);
-      setNoteContents((current) => ({
-        ...current,
-        [noteId]: nextDocument.body,
-      }));
-      setNoteMetadataById((current) => ({
-        ...current,
-        [noteId]: updatedMetadata,
-      }));
+      if (bodyChanged) {
+        await updateNote(note.path, nextDocument.body);
+      }
+
+      let committedMetadata = nextMetadata;
+      if (metadataChanged) {
+        committedMetadata = normalizeNoteMetadata(await writeNoteMetadata(note.path, nextMetadata));
+      }
+
+      if (bodyChanged) {
+        setNoteContents((current) => ({
+          ...current,
+          [noteId]: nextDocument.body,
+        }));
+      }
+
+      if (bodyChanged || metadataChanged) {
+        setNoteMetadataById((current) => ({
+          ...current,
+          [noteId]: committedMetadata,
+        }));
+      }
     } catch (error) {
       console.error(error);
       setErrorMessage("Auto-save failed. Check disk access.");
@@ -967,13 +1103,13 @@ function App() {
   };
 
   const handleChangeNoteMetadata = (noteId: string, metadata: NoteMetadata) => {
+    const nextMetadata = normalizeNoteMetadata(metadata);
     setNoteMetadataById((current) => ({
       ...current,
-      [noteId]: normalizeNoteMetadata({
-        ...metadata,
-        updatedAt: current[noteId]?.updatedAt,
-      }),
+      [noteId]: nextMetadata,
     }));
+    setPersistedTagCatalog((current) => mergeTagCatalog(current, nextMetadata.tags));
+    persistNoteMetadata(noteId, nextMetadata);
   };
 
   const handleClosePane = (paneId: string) => {

@@ -59,7 +59,11 @@ export function EditorPane({
       role="presentation"
     >
       <NoteEditor
-        note={note ? { id: note.id, title: note.title, path: note.path } : null}
+        note={
+          note
+            ? { id: note.id, title: note.title, path: note.path, updatedAt: note.updatedAt }
+            : null
+        }
         metadata={
           note
             ? {

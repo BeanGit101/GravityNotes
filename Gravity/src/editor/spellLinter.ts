@@ -1,49 +1,46 @@
 import { forceLinting, linter, setDiagnostics, type Diagnostic } from "@codemirror/lint";
 import type { EditorView, ViewUpdate } from "@codemirror/view";
+import { addDictionaryWord, listDictionaryWords } from "../services/notesService";
 import { spellChecker } from "./spellCheck";
 import { TECH_WORDS } from "./techWords";
 
-const ALLOWLIST_STORAGE_KEY = "spell-allowlist";
 const WORD_PATTERN = /\b[a-zA-Z]{2,}(?:['\u2019][a-zA-Z]+)*\b/g;
 const MAX_DIAGNOSTICS = 200;
 
 let allowlistCache: Set<string> | null = null;
+let allowlistPromise: Promise<Set<string>> | null = null;
 const checkCache = new Map<string, boolean>();
 const suggestionCache = new Map<string, string[]>();
 
-const readAllowlist = () => {
+const normalizeWord = (word: string) => word.replace(/\u2019/g, "'");
+
+const loadAllowlist = async () => {
   if (allowlistCache) {
     return new Set(allowlistCache);
   }
 
-  try {
-    const raw = localStorage.getItem(ALLOWLIST_STORAGE_KEY);
-    if (!raw) {
-      allowlistCache = new Set<string>();
-      return new Set<string>();
-    }
-
-    const parsed: unknown = JSON.parse(raw);
-    if (!Array.isArray(parsed)) {
-      allowlistCache = new Set<string>();
-      return new Set<string>();
-    }
-
-    const words = parsed.filter((value): value is string => typeof value === "string");
-    allowlistCache = new Set(words.map((word) => word.toLowerCase()));
-    return new Set(allowlistCache);
-  } catch {
-    allowlistCache = new Set<string>();
-    return new Set<string>();
+  if (!allowlistPromise) {
+    allowlistPromise = listDictionaryWords()
+      .then((words) => new Set(words.map((word) => word.toLowerCase())))
+      .catch(() => new Set<string>())
+      .then((words) => {
+        allowlistCache = new Set(words);
+        return new Set(words);
+      })
+      .finally(() => {
+        allowlistPromise = null;
+      });
   }
+
+  return allowlistPromise;
 };
 
-const writeAllowlist = (allowlist: Set<string>) => {
-  allowlistCache = new Set(allowlist);
-  localStorage.setItem(ALLOWLIST_STORAGE_KEY, JSON.stringify(Array.from(allowlist.values())));
+const cacheAllowlistWord = (word: string) => {
+  const next = new Set(allowlistCache ?? []);
+  next.add(word.toLowerCase());
+  allowlistCache = next;
+  return next;
 };
-
-const normalizeWord = (word: string) => word.replace(/\u2019/g, "'");
 
 const editDistance = (source: string, target: string) => {
   const sourceLength = source.length;
@@ -184,13 +181,14 @@ const shouldSkipWord = (word: string, allowlist: Set<string>) => {
   return allowlist.has(normalizedWord);
 };
 
-const refreshDiagnosticsImmediately = (editorView: EditorView) => {
-  editorView.dispatch(setDiagnostics(editorView.state, linterDiagnosticSource(editorView)));
+const refreshDiagnosticsImmediately = (editorView: EditorView, allowlist: Set<string>) => {
+  editorView.dispatch(
+    setDiagnostics(editorView.state, linterDiagnosticSource(editorView, allowlist))
+  );
 };
 
-const linterDiagnosticSource = (view: EditorView) => {
+const linterDiagnosticSource = (view: EditorView, allowlist: Set<string>) => {
   const diagnostics: Diagnostic[] = [];
-  const allowlist = readAllowlist();
   const text = view.state.doc.toString();
 
   for (const range of view.visibleRanges) {
@@ -226,10 +224,11 @@ const linterDiagnosticSource = (view: EditorView) => {
       actions.push({
         name: "Add to dictionary",
         apply: (editorView: EditorView) => {
-          const updatedAllowlist = readAllowlist();
-          updatedAllowlist.add(normalizedWord);
-          writeAllowlist(updatedAllowlist);
-          refreshDiagnosticsImmediately(editorView);
+          const updatedAllowlist = cacheAllowlistWord(normalizedWord);
+          void addDictionaryWord(normalizedWord).catch(() => {
+            // Ignore backend persistence failures; diagnostics will repopulate on reload.
+          });
+          refreshDiagnosticsImmediately(editorView, updatedAllowlist);
           forceLinting(editorView);
         },
       });
@@ -254,7 +253,8 @@ const linterDiagnosticSource = (view: EditorView) => {
 export const spellLinter = linter(
   async (view) => {
     await spellChecker.ready;
-    return linterDiagnosticSource(view);
+    const allowlist = await loadAllowlist();
+    return linterDiagnosticSource(view, allowlist);
   },
   {
     delay: 400,

@@ -50,7 +50,7 @@ describe("template flows", () => {
     });
   });
 
-  it("applies template content when creating a note", async () => {
+  it("applies template body and metadata when creating a note", async () => {
     invokeMock.mockImplementation(async (command: string) => {
       if (command === "set_vault_path") {
         return "/vault";
@@ -58,7 +58,7 @@ describe("template flows", () => {
 
       if (command === "create_note") {
         return {
-          id: "/vault/plan.md",
+          id: "note-1",
           title: "Plan",
           path: "/vault/plan.md",
         };
@@ -79,8 +79,11 @@ describe("template flows", () => {
     expect(invokeMock).toHaveBeenNthCalledWith(2, "create_note", {
       title: "Plan",
       folderPath: null,
-      initialContent:
-        "---\nsubject: Sprint Planning\ntags:\n  - planning\n  - team\n---\n\n# Kickoff\n",
+      initialBody: "# Kickoff\n",
+      metadata: {
+        subject: "Sprint Planning",
+        tags: ["planning", "team"],
+      },
     });
   });
 
